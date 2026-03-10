@@ -6,107 +6,76 @@ interface LangOption {
   code: string;
   label: string;
   speechCode: string;
+  deepgramCode: string;
 }
 
 const LANGUAGES: LangOption[] = [
-  { code: "Arabic", label: "Arabic", speechCode: "ar-SA" },
-  { code: "English", label: "English", speechCode: "en-US" },
-  { code: "French", label: "Fran\u00e7ais", speechCode: "fr-FR" },
-  { code: "Spanish", label: "Espa\u00f1ol", speechCode: "es-ES" },
-  { code: "Urdu", label: "Urdu", speechCode: "ur-PK" },
-  { code: "Turkish", label: "T\u00fcrk\u00e7e", speechCode: "tr-TR" },
-  { code: "Malay", label: "Bahasa Melayu", speechCode: "ms-MY" },
-  { code: "Indonesian", label: "Indonesian", speechCode: "id-ID" },
-  { code: "Bengali", label: "Bengali", speechCode: "bn-BD" },
-  { code: "Somali", label: "Soomaali", speechCode: "so-SO" },
+  { code: "Arabic", label: "Arabic", speechCode: "ar-SA", deepgramCode: "ar" },
+  { code: "English", label: "English", speechCode: "en-US", deepgramCode: "en-US" },
+  { code: "French", label: "Fran\u00e7ais", speechCode: "fr-FR", deepgramCode: "fr" },
+  { code: "Spanish", label: "Espa\u00f1ol", speechCode: "es-ES", deepgramCode: "es" },
+  { code: "Urdu", label: "Urdu", speechCode: "ur-PK", deepgramCode: "ur" },
+  { code: "Turkish", label: "T\u00fcrk\u00e7e", speechCode: "tr-TR", deepgramCode: "tr" },
+  { code: "Malay", label: "Bahasa Melayu", speechCode: "ms-MY", deepgramCode: "ms" },
+  { code: "Indonesian", label: "Indonesian", speechCode: "id-ID", deepgramCode: "id" },
+  { code: "Bengali", label: "Bengali", speechCode: "bn-BD", deepgramCode: "bn" },
+  { code: "Somali", label: "Soomaali", speechCode: "so-SO", deepgramCode: "so" },
 ];
 
 const isRTL = (code: string) => code === "Arabic" || code === "Urdu";
 
-// Format seconds to mm:ss
 function formatTime(sec: number) {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-// Count words across languages (rough split)
 function wordCount(text: string) {
   if (!text.trim()) return 0;
   return text.trim().split(/\s+/).length;
 }
 
 // --- Audio Visualizer Hook ---
-function useAudioVisualizer(isListening: boolean) {
+function useAudioVisualizer(stream: MediaStream | null) {
   const [levels, setLevels] = useState<number[]>(new Array(24).fill(0));
   const animRef = useRef<number>(0);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const ctxRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
-    if (!isListening) {
-      // Decay bars to zero
+    if (!stream) {
       setLevels(new Array(24).fill(0));
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-      }
-      if (ctxRef.current) {
-        ctxRef.current.close();
-        ctxRef.current = null;
-      }
-      analyserRef.current = null;
       if (animRef.current) cancelAnimationFrame(animRef.current);
       return;
     }
 
+    const ctx = new AudioContext();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 64;
+    analyser.smoothingTimeConstant = 0.75;
+    source.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
     let cancelled = false;
 
-    async function start() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
-        streamRef.current = stream;
-        const ctx = new AudioContext();
-        ctxRef.current = ctx;
-        const source = ctx.createMediaStreamSource(stream);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 64;
-        analyser.smoothingTimeConstant = 0.75;
-        source.connect(analyser);
-        analyserRef.current = analyser;
-
-        const data = new Uint8Array(analyser.frequencyBinCount);
-
-        function tick() {
-          if (cancelled) return;
-          analyser.getByteFrequencyData(data);
-          // Map to 24 bars
-          const bars: number[] = [];
-          const binCount = data.length;
-          for (let i = 0; i < 24; i++) {
-            const idx = Math.floor((i / 24) * binCount);
-            bars.push(data[idx] / 255);
-          }
-          setLevels(bars);
-          animRef.current = requestAnimationFrame(tick);
-        }
-        tick();
-      } catch {
-        // mic access denied — fall back to silent
+    function tick() {
+      if (cancelled) return;
+      analyser.getByteFrequencyData(data);
+      const bars: number[] = [];
+      const binCount = data.length;
+      for (let i = 0; i < 24; i++) {
+        const idx = Math.floor((i / 24) * binCount);
+        bars.push(data[idx] / 255);
       }
+      setLevels(bars);
+      animRef.current = requestAnimationFrame(tick);
     }
-
-    start();
+    tick();
 
     return () => {
       cancelled = true;
       if (animRef.current) cancelAnimationFrame(animRef.current);
-      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
-      if (ctxRef.current) ctxRef.current.close();
+      ctx.close();
     };
-  }, [isListening]);
+  }, [stream]);
 
   return levels;
 }
@@ -126,9 +95,9 @@ export default function LiveListen() {
   const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>("");
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [elapsed, setElapsed] = useState(0);
+  const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const [useDeepgram, setUseDeepgram] = useState(true);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recognitionRef = useRef<any>(null);
   const leftPanelRef = useRef<HTMLDivElement>(null);
   const rightPanelRef = useRef<HTMLDivElement>(null);
   const pendingTextRef = useRef("");
@@ -138,8 +107,12 @@ export default function LiveListen() {
   const abortRef = useRef<AbortController | null>(null);
   const lastInterimRef = useRef("");
   const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
 
-  const audioLevels = useAudioVisualizer(isListening);
+  const audioLevels = useAudioVisualizer(micStream);
 
   useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
 
@@ -243,12 +216,160 @@ export default function LiveListen() {
     }
   }, [sourceLang.code, targetLang.code, speak]);
 
-  const startListening = useCallback(() => {
+  // --- Deepgram WebSocket streaming ---
+  const startDeepgram = useCallback(async () => {
     setError(null);
     setFullOriginal("");
     setFullTranslation("");
     setStreamingTranslation("");
     setCurrentPartial("");
+
+    try {
+      // Get Deepgram API key
+      const tokenRes = await fetch("/api/deepgram-token");
+      const tokenData = await tokenRes.json();
+      if (tokenData.error) {
+        setError(tokenData.error + " — falling back to browser speech recognition");
+        setUseDeepgram(false);
+        return false;
+      }
+
+      // Get mic stream
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+        },
+      });
+      setMicStream(stream);
+
+      // Connect to Deepgram WebSocket
+      const lang = sourceLang.deepgramCode;
+      const wsUrl = `wss://api.deepgram.com/v1/listen?language=${lang}&model=nova-3&punctuate=true&interim_results=true&utterance_end_ms=1000&vad_events=true&smart_format=true&encoding=linear16&sample_rate=16000`;
+
+      const ws = new WebSocket(wsUrl, ["token", tokenData.key]);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        // Start sending audio via AudioWorklet or ScriptProcessor
+        const audioCtx = new AudioContext({ sampleRate: 16000 });
+        const source = audioCtx.createMediaStreamSource(stream);
+        const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+        processor.onaudioprocess = (e) => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          const float32 = e.inputBuffer.getChannelData(0);
+          // Convert float32 to int16
+          const int16 = new Int16Array(float32.length);
+          for (let i = 0; i < float32.length; i++) {
+            const s = Math.max(-1, Math.min(1, float32[i]));
+            int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+          ws.send(int16.buffer);
+        };
+
+        source.connect(processor);
+        processor.connect(audioCtx.destination);
+
+        // Store for cleanup
+        mediaRecorderRef.current = { stop: () => {
+          processor.disconnect();
+          source.disconnect();
+          audioCtx.close();
+        }} as unknown as MediaRecorder;
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "Results") {
+          const transcript = data.channel?.alternatives?.[0]?.transcript || "";
+          const isFinal = data.is_final;
+
+          if (transcript) {
+            if (isFinal) {
+              pendingTextRef.current += (pendingTextRef.current ? " " : "") + transcript;
+              setCurrentPartial(pendingTextRef.current);
+
+              // Clear interim timer
+              if (interimTimerRef.current) { clearTimeout(interimTimerRef.current); interimTimerRef.current = null; }
+
+              // Debounce final translation
+              if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+              debounceTimerRef.current = setTimeout(() => {
+                if (pendingTextRef.current.trim()) {
+                  const txt = pendingTextRef.current;
+                  pendingTextRef.current = "";
+                  translateText(txt, false);
+                }
+              }, 500);
+            } else {
+              // Interim result — show immediately
+              const display = [pendingTextRef.current, transcript].filter(Boolean).join(" ");
+              setCurrentPartial(display);
+
+              // Smart interim translation
+              if (display.trim().length > 10 && display !== lastInterimRef.current) {
+                lastInterimRef.current = display;
+                if (interimTimerRef.current) clearTimeout(interimTimerRef.current);
+                interimTimerRef.current = setTimeout(() => {
+                  translateText(display, true);
+                }, 600);
+              }
+            }
+          }
+        }
+
+        // Utterance end — force translate what we have
+        if (data.type === "UtteranceEnd") {
+          if (pendingTextRef.current.trim()) {
+            if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+            const txt = pendingTextRef.current;
+            pendingTextRef.current = "";
+            translateText(txt, false);
+          }
+        }
+      };
+
+      ws.onerror = () => {
+        setError("Deepgram connection error — falling back to browser recognition");
+        setUseDeepgram(false);
+      };
+
+      ws.onclose = () => {
+        // Translate any remaining pending text
+        if (pendingTextRef.current.trim() && isListeningRef.current) {
+          const txt = pendingTextRef.current;
+          pendingTextRef.current = "";
+          translateText(txt, false);
+        }
+      };
+
+      setIsListening(true);
+      return true;
+    } catch (e) {
+      console.error("Deepgram start error:", e);
+      setError("Could not start Deepgram — falling back to browser recognition");
+      setUseDeepgram(false);
+      return false;
+    }
+  }, [sourceLang.deepgramCode, translateText]);
+
+  // --- Browser SpeechRecognition fallback ---
+  const startBrowserRecognition = useCallback(async () => {
+    setError(null);
+    setFullOriginal("");
+    setFullTranslation("");
+    setStreamingTranslation("");
+    setCurrentPartial("");
+
+    // Get mic for visualizer
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setMicStream(stream);
+    } catch { /* visualizer just won't work */ }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -269,7 +390,6 @@ export default function LiveListen() {
           const t = r[0].transcript.trim();
           if (t) {
             pendingTextRef.current += (pendingTextRef.current ? " " : "") + t;
-            // Clear interim timer — final text arrived
             if (interimTimerRef.current) { clearTimeout(interimTimerRef.current); interimTimerRef.current = null; }
             if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
             debounceTimerRef.current = setTimeout(() => {
@@ -288,7 +408,6 @@ export default function LiveListen() {
       const full = [pendingTextRef.current, interim].filter(Boolean).join(" ");
       if (full) setCurrentPartial(full);
 
-      // Smart interim translation — only if enough text and no recent final
       const combined = [pendingTextRef.current, interim].filter(Boolean).join(" ");
       if (combined.trim().length > 10 && combined !== lastInterimRef.current) {
         lastInterimRef.current = combined;
@@ -316,23 +435,61 @@ export default function LiveListen() {
     catch { setError("Could not start microphone."); }
   }, [sourceLang.speechCode, translateText]);
 
+  // --- Start listening (tries Deepgram first, falls back to browser) ---
+  const startListening = useCallback(async () => {
+    if (useDeepgram) {
+      const ok = await startDeepgram();
+      if (!ok) {
+        // Fallback
+        startBrowserRecognition();
+      }
+    } else {
+      startBrowserRecognition();
+    }
+  }, [useDeepgram, startDeepgram, startBrowserRecognition]);
+
   const stopListening = useCallback(() => {
     setIsListening(false);
     if (debounceTimerRef.current) { clearTimeout(debounceTimerRef.current); debounceTimerRef.current = null; }
     if (interimTimerRef.current) { clearTimeout(interimTimerRef.current); interimTimerRef.current = null; }
     if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
-    if (recognitionRef.current) { recognitionRef.current.onend = null; recognitionRef.current.abort(); recognitionRef.current = null; }
+
+    // Stop Deepgram
+    if (wsRef.current) {
+      try { wsRef.current.close(); } catch { /* */ }
+      wsRef.current = null;
+    }
+    if (mediaRecorderRef.current) {
+      try { mediaRecorderRef.current.stop(); } catch { /* */ }
+      mediaRecorderRef.current = null;
+    }
+
+    // Stop browser recognition
+    if (recognitionRef.current) {
+      recognitionRef.current.onend = null;
+      recognitionRef.current.abort();
+      recognitionRef.current = null;
+    }
+
+    // Stop mic stream
+    if (micStream) {
+      micStream.getTracks().forEach((t) => t.stop());
+      setMicStream(null);
+    }
+
     speechSynthesis.cancel();
+
     if (pendingTextRef.current.trim()) {
       const rem = pendingTextRef.current;
       pendingTextRef.current = "";
       translateText(rem, false);
     }
-  }, [translateText]);
+  }, [translateText, micStream]);
 
   useEffect(() => {
     return () => {
       if (recognitionRef.current) { recognitionRef.current.onend = null; recognitionRef.current.abort(); }
+      if (wsRef.current) { try { wsRef.current.close(); } catch { /* */ } }
       speechSynthesis.cancel();
     };
   }, []);
@@ -348,7 +505,7 @@ export default function LiveListen() {
 
   return (
     <div className="h-dvh flex flex-col relative overflow-hidden" style={{ background: "var(--bg)" }}>
-      {/* Ambient floating orbs — only visible while listening */}
+      {/* Ambient floating orbs */}
       {isListening && (
         <div className="absolute inset-0 pointer-events-none z-0">
           <div className="ambient-orb ambient-orb-1" />
@@ -361,7 +518,6 @@ export default function LiveListen() {
       <header className="flex items-center justify-between px-5 py-3 shrink-0 relative z-10" style={{ borderBottom: "1px solid var(--surface-border)" }}>
         <h1 className="text-lg font-bold tracking-tight gradient-text">LiveListen</h1>
         <div className="flex items-center gap-2">
-          {/* Live stats */}
           {isListening && (
             <div className="flex items-center gap-2 mr-2">
               <span className="elapsed-timer stat-badge">{formatTime(elapsed)}</span>
@@ -496,7 +652,6 @@ export default function LiveListen() {
 
       {/* Bottom Controls */}
       <div className="shrink-0 py-3 flex items-center justify-center gap-4 glass relative z-10" style={{ borderTop: "1px solid var(--surface-border)" }}>
-        {/* Real-time audio visualizer left side */}
         {isListening && (
           <div className="flex items-center gap-1 h-8">
             {audioLevels.slice(0, 8).map((l, i) => (
@@ -505,7 +660,6 @@ export default function LiveListen() {
           </div>
         )}
 
-        {/* Mic button with ripple */}
         <div className="relative">
           {isListening && (
             <>
@@ -536,7 +690,6 @@ export default function LiveListen() {
           </button>
         </div>
 
-        {/* Audio visualizer right side */}
         {isListening && (
           <div className="flex items-center gap-1 h-8">
             {audioLevels.slice(8, 16).map((l, i) => (
@@ -580,6 +733,13 @@ export default function LiveListen() {
                   {availableVoices.filter((v) => v.lang.startsWith(targetLang.speechCode.split("-")[0])).map((v) => (
                     <option key={v.voiceURI} value={v.voiceURI}>{v.name}{v.localService ? "" : " (cloud)"}</option>
                   ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2" style={{ color: "var(--text-dim)" }}>Speech Engine</label>
+                <select value={useDeepgram ? "deepgram" : "browser"} onChange={(e) => setUseDeepgram(e.target.value === "deepgram")} className="settings-select">
+                  <option value="deepgram">Deepgram Nova-3 (faster, more accurate)</option>
+                  <option value="browser">Browser built-in (no API key needed)</option>
                 </select>
               </div>
             </div>
