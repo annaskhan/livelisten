@@ -23,12 +23,99 @@ const LANGUAGES: LangOption[] = [
 
 const isRTL = (code: string) => code === "Arabic" || code === "Urdu";
 
+// Format seconds to mm:ss
+function formatTime(sec: number) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+// Count words across languages (rough split)
+function wordCount(text: string) {
+  if (!text.trim()) return 0;
+  return text.trim().split(/\s+/).length;
+}
+
+// --- Audio Visualizer Hook ---
+function useAudioVisualizer(isListening: boolean) {
+  const [levels, setLevels] = useState<number[]>(new Array(24).fill(0));
+  const animRef = useRef<number>(0);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const ctxRef = useRef<AudioContext | null>(null);
+
+  useEffect(() => {
+    if (!isListening) {
+      // Decay bars to zero
+      setLevels(new Array(24).fill(0));
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+      if (ctxRef.current) {
+        ctxRef.current.close();
+        ctxRef.current = null;
+      }
+      analyserRef.current = null;
+      if (animRef.current) cancelAnimationFrame(animRef.current);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function start() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        const ctx = new AudioContext();
+        ctxRef.current = ctx;
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 64;
+        analyser.smoothingTimeConstant = 0.75;
+        source.connect(analyser);
+        analyserRef.current = analyser;
+
+        const data = new Uint8Array(analyser.frequencyBinCount);
+
+        function tick() {
+          if (cancelled) return;
+          analyser.getByteFrequencyData(data);
+          // Map to 24 bars
+          const bars: number[] = [];
+          const binCount = data.length;
+          for (let i = 0; i < 24; i++) {
+            const idx = Math.floor((i / 24) * binCount);
+            bars.push(data[idx] / 255);
+          }
+          setLevels(bars);
+          animRef.current = requestAnimationFrame(tick);
+        }
+        tick();
+      } catch {
+        // mic access denied — fall back to silent
+      }
+    }
+
+    start();
+
+    return () => {
+      cancelled = true;
+      if (animRef.current) cancelAnimationFrame(animRef.current);
+      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+      if (ctxRef.current) ctxRef.current.close();
+    };
+  }, [isListening]);
+
+  return levels;
+}
+
+// --- Component ---
 export default function LiveListen() {
   const [isListening, setIsListening] = useState(false);
-  // Full accumulated transcripts
   const [fullOriginal, setFullOriginal] = useState("");
   const [fullTranslation, setFullTranslation] = useState("");
-  // Partial/streaming for live section
   const [currentPartial, setCurrentPartial] = useState("");
   const [streamingTranslation, setStreamingTranslation] = useState("");
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -38,17 +125,34 @@ export default function LiveListen() {
   const [error, setError] = useState<string | null>(null);
   const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>("");
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [elapsed, setElapsed] = useState(0);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const leftPanelRef = useRef<HTMLDivElement>(null);
   const rightPanelRef = useRef<HTMLDivElement>(null);
-  const lineIdRef = useRef(0);
   const pendingTextRef = useRef("");
   const isListeningRef = useRef(false);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const interimTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const lastInterimRef = useRef("");
+  const elapsedRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const audioLevels = useAudioVisualizer(isListening);
 
   useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
+
+  // Elapsed timer
+  useEffect(() => {
+    if (isListening) {
+      setElapsed(0);
+      elapsedRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
+    } else {
+      if (elapsedRef.current) { clearInterval(elapsedRef.current); elapsedRef.current = null; }
+    }
+    return () => { if (elapsedRef.current) clearInterval(elapsedRef.current); };
+  }, [isListening]);
 
   useEffect(() => {
     const loadVoices = () => {
@@ -60,7 +164,6 @@ export default function LiveListen() {
     return () => speechSynthesis.removeEventListener("voiceschanged", loadVoices);
   }, []);
 
-  // Auto-scroll both panels to bottom
   useEffect(() => {
     if (leftPanelRef.current) leftPanelRef.current.scrollTop = leftPanelRef.current.scrollHeight;
     if (rightPanelRef.current) rightPanelRef.current.scrollTop = rightPanelRef.current.scrollHeight;
@@ -85,23 +188,25 @@ export default function LiveListen() {
     if (!voiceEnabled || !text) return;
     const u = new SpeechSynthesisUtterance(text);
     u.lang = targetLang.speechCode;
-    u.rate = 0.85;
-    u.pitch = 0.95;
-    u.volume = 0.9;
+    u.rate = 0.85; u.pitch = 0.95; u.volume = 0.9;
     const v = getBestVoice();
     if (v) u.voice = v;
     speechSynthesis.speak(u);
   }, [voiceEnabled, targetLang.speechCode, getBestVoice]);
 
-  // Stream translation from API, appending to the full transcript when done
-  const translateText = useCallback(async (text: string) => {
+  const translateText = useCallback(async (text: string, isInterim = false) => {
     if (!text.trim()) return;
+
+    if (isInterim && abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    if (isInterim) abortRef.current = controller;
 
     try {
       const res = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, sourceLang: sourceLang.code, targetLang: targetLang.code, stream: true }),
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -122,15 +227,19 @@ export default function LiveListen() {
         setStreamingTranslation(result);
       }
 
-      // Commit to full transcripts
-      setFullOriginal((prev) => prev + (prev ? " " : "") + text);
-      setFullTranslation((prev) => prev + (prev ? " " : "") + result);
-      setStreamingTranslation("");
-      setCurrentPartial("");
-      speak(result);
+      if (!isInterim) {
+        setFullOriginal((prev) => prev + (prev ? " " : "") + text);
+        setFullTranslation((prev) => prev + (prev ? " " : "") + result);
+        setStreamingTranslation("");
+        setCurrentPartial("");
+        speak(result);
+      }
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return;
       console.error(e);
-      setError("Translation service error");
+      if (!isInterim) setError("Translation service error");
+    } finally {
+      if (isInterim) abortRef.current = null;
     }
   }, [sourceLang.code, targetLang.code, speak]);
 
@@ -140,7 +249,6 @@ export default function LiveListen() {
     setFullTranslation("");
     setStreamingTranslation("");
     setCurrentPartial("");
-    lineIdRef.current = 0;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -161,12 +269,14 @@ export default function LiveListen() {
           const t = r[0].transcript.trim();
           if (t) {
             pendingTextRef.current += (pendingTextRef.current ? " " : "") + t;
+            // Clear interim timer — final text arrived
+            if (interimTimerRef.current) { clearTimeout(interimTimerRef.current); interimTimerRef.current = null; }
             if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
             debounceTimerRef.current = setTimeout(() => {
               if (pendingTextRef.current.trim()) {
                 const txt = pendingTextRef.current;
                 pendingTextRef.current = "";
-                translateText(txt);
+                translateText(txt, false);
               }
             }, 500);
           }
@@ -177,6 +287,16 @@ export default function LiveListen() {
 
       const full = [pendingTextRef.current, interim].filter(Boolean).join(" ");
       if (full) setCurrentPartial(full);
+
+      // Smart interim translation — only if enough text and no recent final
+      const combined = [pendingTextRef.current, interim].filter(Boolean).join(" ");
+      if (combined.trim().length > 10 && combined !== lastInterimRef.current) {
+        lastInterimRef.current = combined;
+        if (interimTimerRef.current) clearTimeout(interimTimerRef.current);
+        interimTimerRef.current = setTimeout(() => {
+          translateText(combined, true);
+        }, 600);
+      }
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -199,12 +319,14 @@ export default function LiveListen() {
   const stopListening = useCallback(() => {
     setIsListening(false);
     if (debounceTimerRef.current) { clearTimeout(debounceTimerRef.current); debounceTimerRef.current = null; }
+    if (interimTimerRef.current) { clearTimeout(interimTimerRef.current); interimTimerRef.current = null; }
+    if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
     if (recognitionRef.current) { recognitionRef.current.onend = null; recognitionRef.current.abort(); recognitionRef.current = null; }
     speechSynthesis.cancel();
     if (pendingTextRef.current.trim()) {
       const rem = pendingTextRef.current;
       pendingTextRef.current = "";
-      translateText(rem);
+      translateText(rem, false);
     }
   }, [translateText]);
 
@@ -218,16 +340,33 @@ export default function LiveListen() {
   const sourceIsRTL = isRTL(sourceLang.code);
   const targetIsRTL = isRTL(targetLang.code);
 
-  // Build display text: committed + live partial
   const displayOriginal = fullOriginal + (currentPartial ? (fullOriginal ? " " : "") + currentPartial : "");
   const displayTranslation = fullTranslation + (streamingTranslation ? (fullTranslation ? " " : "") + streamingTranslation : "");
 
+  const origWords = wordCount(displayOriginal);
+  const transWords = wordCount(displayTranslation);
+
   return (
-    <div className="h-dvh flex flex-col" style={{ background: "var(--bg)" }}>
+    <div className="h-dvh flex flex-col relative overflow-hidden" style={{ background: "var(--bg)" }}>
+      {/* Ambient floating orbs — only visible while listening */}
+      {isListening && (
+        <div className="absolute inset-0 pointer-events-none z-0">
+          <div className="ambient-orb ambient-orb-1" />
+          <div className="ambient-orb ambient-orb-2" />
+          <div className="ambient-orb ambient-orb-3" />
+        </div>
+      )}
+
       {/* Header */}
-      <header className="flex items-center justify-between px-5 py-3 shrink-0" style={{ borderBottom: "1px solid var(--surface-border)" }}>
+      <header className="flex items-center justify-between px-5 py-3 shrink-0 relative z-10" style={{ borderBottom: "1px solid var(--surface-border)" }}>
         <h1 className="text-lg font-bold tracking-tight gradient-text">LiveListen</h1>
         <div className="flex items-center gap-2">
+          {/* Live stats */}
+          {isListening && (
+            <div className="flex items-center gap-2 mr-2">
+              <span className="elapsed-timer stat-badge">{formatTime(elapsed)}</span>
+            </div>
+          )}
           <button onClick={() => setVoiceEnabled(!voiceEnabled)}
             className="p-2 rounded-xl transition-all"
             style={{
@@ -257,26 +396,29 @@ export default function LiveListen() {
 
       {/* Error */}
       {error && (
-        <div className="mx-4 mt-2 px-4 py-2.5 rounded-xl text-sm shrink-0 flex items-center justify-between"
+        <div className="mx-4 mt-2 px-4 py-2.5 rounded-xl text-sm shrink-0 flex items-center justify-between relative z-10"
           style={{ background: "rgba(217, 112, 135, 0.1)", color: "var(--danger)", border: "1px solid rgba(217, 112, 135, 0.2)" }}>
           <span>{error}</span>
           <button onClick={() => setError(null)} className="ml-3 opacity-70 hover:opacity-100 text-lg leading-none">&times;</button>
         </div>
       )}
 
-      {/* Main content: Split screen */}
-      <div className="flex-1 flex min-h-0">
-        {/* LEFT: Translation (Target language) */}
-        <div className="flex-1 flex flex-col min-h-0">
-          <div className="px-4 py-2.5 shrink-0 flex items-center justify-between" style={{ borderBottom: "1px solid var(--surface-border)" }}>
+      {/* Split screen */}
+      <div className="flex-1 flex min-h-0 relative z-10">
+        {/* LEFT: Translation */}
+        <div className={`flex-1 flex flex-col min-h-0 ${isListening ? "panel-breathing" : ""}`}>
+          <div className="px-4 py-2 shrink-0 flex items-center justify-between" style={{ borderBottom: "1px solid var(--surface-border)" }}>
             <span className="lang-pill">{targetLang.label}</span>
-            {isListening && streamingTranslation && (
-              <div className="flex gap-1">
-                <div className="w-1.5 h-1.5 rounded-full pulse-ring" style={{ background: "var(--accent)" }} />
-                <div className="w-1.5 h-1.5 rounded-full pulse-ring" style={{ background: "var(--accent)", animationDelay: "0.15s" }} />
-                <div className="w-1.5 h-1.5 rounded-full pulse-ring" style={{ background: "var(--accent)", animationDelay: "0.3s" }} />
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {transWords > 0 && <span className="stat-badge">{transWords} words</span>}
+              {isListening && streamingTranslation && (
+                <div className="flex gap-1">
+                  <div className="w-1.5 h-1.5 rounded-full pulse-ring" style={{ background: "var(--accent)" }} />
+                  <div className="w-1.5 h-1.5 rounded-full pulse-ring" style={{ background: "var(--accent)", animationDelay: "0.15s" }} />
+                  <div className="w-1.5 h-1.5 rounded-full pulse-ring" style={{ background: "var(--accent)", animationDelay: "0.3s" }} />
+                </div>
+              )}
+            </div>
           </div>
           <div ref={leftPanelRef} className="flex-1 overflow-y-auto px-5 py-4" style={{ direction: targetIsRTL ? "rtl" : "ltr" }}>
             {!isListening && !displayTranslation && (
@@ -284,16 +426,17 @@ export default function LiveListen() {
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.4 }}>
                   <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
                   <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  <line x1="12" y1="19" x2="12" y2="23" />
-                  <line x1="8" y1="23" x2="16" y2="23" />
+                  <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
                 </svg>
                 <p className="text-sm text-center">Translation will appear here</p>
               </div>
             )}
             {isListening && !displayTranslation && (
               <div className="flex flex-col items-center justify-center h-full gap-3">
-                <div className="flex items-end gap-1.5 h-7">
-                  <div className="wave-bar" /><div className="wave-bar" /><div className="wave-bar" /><div className="wave-bar" /><div className="wave-bar" />
+                <div className="visualizer-container">
+                  {audioLevels.slice(0, 12).map((l, i) => (
+                    <div key={i} className="viz-bar" style={{ height: `${Math.max(2, l * 36)}px` }} />
+                  ))}
                 </div>
                 <p className="text-sm" style={{ color: "var(--accent)" }}>Waiting for speech...</p>
               </div>
@@ -310,15 +453,20 @@ export default function LiveListen() {
         {/* Divider */}
         <div className="panel-divider shrink-0" />
 
-        {/* RIGHT: Original (Source language) */}
-        <div className="flex-1 flex flex-col min-h-0">
-          <div className="px-4 py-2.5 shrink-0 flex items-center justify-between" style={{ borderBottom: "1px solid var(--surface-border)" }}>
+        {/* RIGHT: Original */}
+        <div className={`flex-1 flex flex-col min-h-0 ${isListening ? "panel-breathing" : ""}`}>
+          <div className="px-4 py-2 shrink-0 flex items-center justify-between" style={{ borderBottom: "1px solid var(--surface-border)" }}>
             <span className="lang-pill">{sourceLang.label}</span>
-            {isListening && currentPartial && (
-              <div className="flex items-end gap-1 h-3">
-                <div className="wave-bar" style={{ width: 2 }} /><div className="wave-bar" style={{ width: 2 }} /><div className="wave-bar" style={{ width: 2 }} />
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {origWords > 0 && <span className="stat-badge">{origWords} words</span>}
+              {isListening && currentPartial && (
+                <div className="flex items-end gap-1 h-3">
+                  {audioLevels.slice(0, 3).map((l, i) => (
+                    <div key={i} className="viz-bar" style={{ width: 2, height: `${Math.max(2, l * 12)}px` }} />
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           <div ref={rightPanelRef} className="flex-1 overflow-y-auto px-5 py-4" style={{ direction: sourceIsRTL ? "rtl" : "ltr" }}>
             {!isListening && !displayOriginal && (
@@ -328,15 +476,16 @@ export default function LiveListen() {
             )}
             {isListening && !displayOriginal && (
               <div className="flex flex-col items-center justify-center h-full gap-3">
-                <div className="flex items-end gap-1.5 h-7">
-                  <div className="wave-bar" /><div className="wave-bar" /><div className="wave-bar" /><div className="wave-bar" /><div className="wave-bar" />
+                <div className="visualizer-container">
+                  {audioLevels.map((l, i) => (
+                    <div key={i} className="viz-bar" style={{ height: `${Math.max(2, l * 36)}px` }} />
+                  ))}
                 </div>
                 <p className="text-sm" style={{ color: "var(--accent)" }}>Listening...</p>
               </div>
             )}
             {displayOriginal && (
               <p className="text-base leading-[1.9]" style={{ color: "var(--text-dim)" }}>
-                {/* Show committed text normally, partial text in accent */}
                 {fullOriginal && <span>{fullOriginal} </span>}
                 {currentPartial && <span style={{ color: "var(--accent)", opacity: 0.7 }}>{currentPartial}</span>}
               </p>
@@ -346,43 +495,59 @@ export default function LiveListen() {
       </div>
 
       {/* Bottom Controls */}
-      <div className="shrink-0 py-4 flex items-center justify-center gap-5 glass" style={{ borderTop: "1px solid var(--surface-border)" }}>
+      <div className="shrink-0 py-3 flex items-center justify-center gap-4 glass relative z-10" style={{ borderTop: "1px solid var(--surface-border)" }}>
+        {/* Real-time audio visualizer left side */}
         {isListening && (
-          <div className="flex items-center gap-2">
-            <div className="flex items-end gap-1 h-4">
-              <div className="wave-bar" style={{ width: 2, height: 6 }} />
-              <div className="wave-bar" style={{ width: 2, height: 10 }} />
-              <div className="wave-bar" style={{ width: 2, height: 7 }} />
-              <div className="wave-bar" style={{ width: 2, height: 12 }} />
-              <div className="wave-bar" style={{ width: 2, height: 5 }} />
-            </div>
-            <span className="text-xs font-bold tracking-widest" style={{ color: "var(--accent)" }}>LIVE</span>
+          <div className="flex items-center gap-1 h-8">
+            {audioLevels.slice(0, 8).map((l, i) => (
+              <div key={i} className="viz-bar" style={{ height: `${Math.max(2, l * 28)}px` }} />
+            ))}
           </div>
         )}
 
-        <button
-          onClick={isListening ? stopListening : startListening}
-          className={`w-14 h-14 rounded-full flex items-center justify-center transition-all ${isListening ? "" : "glow-btn"}`}
-          style={{
-            background: isListening ? "var(--danger)" : "var(--accent-gradient)",
-            border: "none",
-            cursor: "pointer",
-            boxShadow: isListening ? "0 0 24px rgba(217, 112, 135, 0.25)" : undefined,
-          }}>
-          {isListening ? (
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><rect x="6" y="6" width="12" height="12" rx="3" /></svg>
-          ) : (
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-              <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
-            </svg>
+        {/* Mic button with ripple */}
+        <div className="relative">
+          {isListening && (
+            <>
+              <div className="mic-ripple" />
+              <div className="mic-ripple" />
+              <div className="mic-ripple" />
+            </>
           )}
-        </button>
+          <button
+            onClick={isListening ? stopListening : startListening}
+            className={`relative w-14 h-14 rounded-full flex items-center justify-center transition-all ${isListening ? "" : "glow-btn"}`}
+            style={{
+              background: isListening ? "var(--danger)" : "var(--accent-gradient)",
+              border: "none",
+              cursor: "pointer",
+              boxShadow: isListening ? "0 0 24px rgba(217, 112, 135, 0.25)" : undefined,
+              zIndex: 1,
+            }}>
+            {isListening ? (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><rect x="6" y="6" width="12" height="12" rx="3" /></svg>
+            ) : (
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            )}
+          </button>
+        </div>
 
-        <p className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>
-          {isListening ? "Tap to stop" : "Tap to start"}
-        </p>
+        {/* Audio visualizer right side */}
+        {isListening && (
+          <div className="flex items-center gap-1 h-8">
+            {audioLevels.slice(8, 16).map((l, i) => (
+              <div key={i} className="viz-bar" style={{ height: `${Math.max(2, l * 28)}px` }} />
+            ))}
+          </div>
+        )}
+
+        {!isListening && (
+          <p className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>Tap to start</p>
+        )}
       </div>
 
       {/* Settings Modal */}
