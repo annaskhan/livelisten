@@ -11,19 +11,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ translation: "" });
     }
 
-    const prompt = `You are a real-time translator for a live spoken ${sourceLang} sermon (khutbah/religious speech). Translate the following ${sourceLang} text to ${targetLang}. Preserve the meaning, tone, and style of religious speech. Output ONLY the translation — no commentary, no notes, no quotation marks.
+    const prompt = `Translate this ${sourceLang} to ${targetLang}. This is from a live spoken sermon/khutbah. Preserve religious tone. Output ONLY the translation, nothing else.
 
 ${text}`;
 
-    // Streaming mode: return chunks as they arrive
     if (stream) {
       const encoder = new TextEncoder();
       const readable = new ReadableStream({
         async start(controller) {
           try {
             const stream = anthropic.messages.stream({
-              model: "claude-sonnet-4-20250514",
-              max_tokens: 1024,
+              model: "claude-haiku-4-5-20251001",
+              max_tokens: 512,
               messages: [{ role: "user", content: prompt }],
             });
 
@@ -52,10 +51,9 @@ ${text}`;
       });
     }
 
-    // Non-streaming fallback
     const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1024,
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 512,
       messages: [{ role: "user", content: prompt }],
     });
 

@@ -47,9 +47,6 @@ export default function LiveListen() {
   const pendingTextRef = useRef("");
   const isListeningRef = useRef(false);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const interimTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const lastInterimRef = useRef("");
 
   useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
 
@@ -97,19 +94,14 @@ export default function LiveListen() {
   }, [voiceEnabled, targetLang.speechCode, getBestVoice]);
 
   // Stream translation from API, appending to the full transcript when done
-  const translateText = useCallback(async (text: string, isInterim = false) => {
+  const translateText = useCallback(async (text: string) => {
     if (!text.trim()) return;
-
-    if (isInterim && abortRef.current) abortRef.current.abort();
-    const controller = new AbortController();
-    if (isInterim) abortRef.current = controller;
 
     try {
       const res = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, sourceLang: sourceLang.code, targetLang: targetLang.code, stream: true }),
-        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -130,20 +122,15 @@ export default function LiveListen() {
         setStreamingTranslation(result);
       }
 
-      if (!isInterim) {
-        // Commit to full transcripts
-        setFullOriginal((prev) => prev + (prev ? " " : "") + text);
-        setFullTranslation((prev) => prev + (prev ? " " : "") + result);
-        setStreamingTranslation("");
-        setCurrentPartial("");
-        speak(result);
-      }
+      // Commit to full transcripts
+      setFullOriginal((prev) => prev + (prev ? " " : "") + text);
+      setFullTranslation((prev) => prev + (prev ? " " : "") + result);
+      setStreamingTranslation("");
+      setCurrentPartial("");
+      speak(result);
     } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError") return;
       console.error(e);
-      if (!isInterim) setError("Translation service error");
-    } finally {
-      if (isInterim) abortRef.current = null;
+      setError("Translation service error");
     }
   }, [sourceLang.code, targetLang.code, speak]);
 
@@ -174,15 +161,14 @@ export default function LiveListen() {
           const t = r[0].transcript.trim();
           if (t) {
             pendingTextRef.current += (pendingTextRef.current ? " " : "") + t;
-            if (interimTimerRef.current) { clearTimeout(interimTimerRef.current); interimTimerRef.current = null; }
             if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
             debounceTimerRef.current = setTimeout(() => {
               if (pendingTextRef.current.trim()) {
                 const txt = pendingTextRef.current;
                 pendingTextRef.current = "";
-                translateText(txt, false);
+                translateText(txt);
               }
-            }, 800);
+            }, 500);
           }
         } else {
           interim += r[0].transcript;
@@ -191,16 +177,6 @@ export default function LiveListen() {
 
       const full = [pendingTextRef.current, interim].filter(Boolean).join(" ");
       if (full) setCurrentPartial(full);
-
-      // Interim translation for live preview
-      const combined = [pendingTextRef.current, interim].filter(Boolean).join(" ");
-      if (combined.trim() && combined !== lastInterimRef.current) {
-        lastInterimRef.current = combined;
-        if (interimTimerRef.current) clearTimeout(interimTimerRef.current);
-        interimTimerRef.current = setTimeout(() => {
-          translateText(combined, true);
-        }, 400);
-      }
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -223,14 +199,12 @@ export default function LiveListen() {
   const stopListening = useCallback(() => {
     setIsListening(false);
     if (debounceTimerRef.current) { clearTimeout(debounceTimerRef.current); debounceTimerRef.current = null; }
-    if (interimTimerRef.current) { clearTimeout(interimTimerRef.current); interimTimerRef.current = null; }
-    if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
     if (recognitionRef.current) { recognitionRef.current.onend = null; recognitionRef.current.abort(); recognitionRef.current = null; }
     speechSynthesis.cancel();
     if (pendingTextRef.current.trim()) {
       const rem = pendingTextRef.current;
       pendingTextRef.current = "";
-      translateText(rem, false);
+      translateText(rem);
     }
   }, [translateText]);
 
