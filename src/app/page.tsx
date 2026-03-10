@@ -155,6 +155,13 @@ export default function LiveListen() {
   // Load saved sessions on mount
   useEffect(() => { setSessions(loadSessions()); }, []);
 
+  // Register service worker for PWA
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").catch(() => {});
+    }
+  }, []);
+
   useEffect(() => {
     if (isListening) {
       setElapsed(0);
