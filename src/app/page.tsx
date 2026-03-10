@@ -257,9 +257,9 @@ export default function LiveListen() {
           <button onClick={() => setVoiceEnabled(!voiceEnabled)}
             className="p-2 rounded-xl transition-all"
             style={{
-              background: voiceEnabled ? "rgba(78, 204, 163, 0.15)" : "rgba(143, 163, 152, 0.08)",
+              background: voiceEnabled ? "rgba(139, 156, 247, 0.15)" : "rgba(139, 144, 160, 0.08)",
               color: voiceEnabled ? "var(--accent)" : "var(--text-muted)",
-              border: voiceEnabled ? "1px solid rgba(78, 204, 163, 0.25)" : "1px solid transparent",
+              border: voiceEnabled ? "1px solid rgba(139, 156, 247, 0.25)" : "1px solid transparent",
             }}
             title={voiceEnabled ? "Voice on" : "Voice off"}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -272,7 +272,7 @@ export default function LiveListen() {
           </button>
           <button onClick={() => setShowSettings(true)}
             className="p-2 rounded-xl transition-all"
-            style={{ background: "rgba(143, 163, 152, 0.08)", color: "var(--text-muted)", border: "1px solid transparent" }}>
+            style={{ background: "rgba(139, 144, 160, 0.08)", color: "var(--text-muted)", border: "1px solid transparent" }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
@@ -284,7 +284,7 @@ export default function LiveListen() {
       {/* Error */}
       {error && (
         <div className="mx-4 mt-2 px-4 py-2.5 rounded-xl text-sm shrink-0 flex items-center justify-between"
-          style={{ background: "rgba(232, 93, 111, 0.1)", color: "var(--danger)", border: "1px solid rgba(232, 93, 111, 0.2)" }}>
+          style={{ background: "rgba(217, 112, 135, 0.1)", color: "var(--danger)", border: "1px solid rgba(217, 112, 135, 0.2)" }}>
           <span>{error}</span>
           <button onClick={() => setError(null)} className="ml-3 opacity-70 hover:opacity-100 text-lg leading-none">&times;</button>
         </div>
@@ -393,7 +393,7 @@ export default function LiveListen() {
             background: isListening ? "var(--danger)" : "var(--accent-gradient)",
             border: "none",
             cursor: "pointer",
-            boxShadow: isListening ? "0 0 24px rgba(232, 93, 111, 0.25)" : undefined,
+            boxShadow: isListening ? "0 0 24px rgba(217, 112, 135, 0.25)" : undefined,
           }}>
           {isListening ? (
             <svg width="22" height="22" viewBox="0 0 24 24" fill="white"><rect x="6" y="6" width="12" height="12" rx="3" /></svg>
@@ -417,7 +417,7 @@ export default function LiveListen() {
           <div className="w-full max-w-lg rounded-t-3xl p-6 pb-10 glass" style={{ border: "1px solid var(--surface-border)", borderBottom: "none" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-bold gradient-text">Settings</h2>
-              <button onClick={() => setShowSettings(false)} className="p-1.5 rounded-lg" style={{ color: "var(--text-dim)", background: "rgba(143, 163, 152, 0.08)" }}>
+              <button onClick={() => setShowSettings(false)} className="p-1.5 rounded-lg" style={{ color: "var(--text-dim)", background: "rgba(139, 144, 160, 0.08)" }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
               </button>
             </div>

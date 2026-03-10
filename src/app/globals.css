@@ -1,18 +1,18 @@
 @import "tailwindcss";
 
 :root {
-  --bg: #0e110f;
-  --bg-card: #161b17;
-  --bg-panel: #121714;
-  --text: #e8ede9;
-  --text-dim: #8fa398;
-  --text-muted: #5e7a68;
-  --accent: #4ecca3;
-  --accent-light: #7ee8c7;
-  --accent-glow: rgba(78, 204, 163, 0.25);
-  --accent-gradient: linear-gradient(135deg, #4ecca3 0%, #7ee8c7 100%);
-  --danger: #e85d6f;
-  --surface-border: rgba(78, 204, 163, 0.1);
+  --bg: #111318;
+  --bg-card: #181b22;
+  --bg-panel: #14161c;
+  --text: #dcdfe6;
+  --text-dim: #8b90a0;
+  --text-muted: #585e72;
+  --accent: #8b9cf7;
+  --accent-light: #a7b4fa;
+  --accent-glow: rgba(139, 156, 247, 0.15);
+  --accent-gradient: linear-gradient(135deg, #8b9cf7 0%, #b4a0e8 100%);
+  --danger: #d97087;
+  --surface-border: rgba(139, 156, 247, 0.08);
 }
 
 * {
@@ -37,7 +37,7 @@ html, body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(78, 204, 163, 0.25);
+  background: rgba(139, 156, 247, 0.2);
   border-radius: 2px;
 }
 
@@ -104,8 +104,8 @@ html, body {
 }
 
 .lang-pill {
-  background: rgba(78, 204, 163, 0.08);
-  border: 1px solid rgba(78, 204, 163, 0.15);
+  background: rgba(139, 156, 247, 0.06);
+  border: 1px solid rgba(139, 156, 247, 0.12);
   border-radius: 100px;
   padding: 5px 14px;
   font-size: 12px;
@@ -133,5 +133,5 @@ html, body {
 /* Split panel divider */
 .panel-divider {
   width: 1px;
-  background: linear-gradient(180deg, transparent 0%, var(--surface-border) 20%, rgba(78, 204, 163, 0.2) 50%, var(--surface-border) 80%, transparent 100%);
+  background: linear-gradient(180deg, transparent 0%, var(--surface-border) 20%, rgba(139, 156, 247, 0.12) 50%, var(--surface-border) 80%, transparent 100%);
 }
