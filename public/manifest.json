@@ -1,7 +1,7 @@
 {
   "name": "LiveListen — Real-time Translation",
   "short_name": "LiveListen",
-  "description": "Real-time audio translation for sermons, speeches, and meetings",
+  "description": "Real-time audio translation for conversations, meetings, and more",
   "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",

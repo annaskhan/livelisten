@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "LiveListen — Real-time Translation",
-  description: "Real-time audio translation for sermons and speeches",
+  description: "Real-time audio translation for conversations, meetings, and more",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
