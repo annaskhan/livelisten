@@ -12,10 +12,10 @@ interface LangOption {
 const LANGUAGES: LangOption[] = [
   { code: "Arabic", label: "Arabic", speechCode: "ar-SA", deepgramCode: "ar" },
   { code: "English", label: "English", speechCode: "en-US", deepgramCode: "en-US" },
-  { code: "French", label: "Fran\u00e7ais", speechCode: "fr-FR", deepgramCode: "fr" },
-  { code: "Spanish", label: "Espa\u00f1ol", speechCode: "es-ES", deepgramCode: "es" },
+  { code: "French", label: "Français", speechCode: "fr-FR", deepgramCode: "fr" },
+  { code: "Spanish", label: "Español", speechCode: "es-ES", deepgramCode: "es" },
   { code: "Urdu", label: "Urdu", speechCode: "ur-PK", deepgramCode: "ur" },
-  { code: "Turkish", label: "T\u00fcrk\u00e7e", speechCode: "tr-TR", deepgramCode: "tr" },
+  { code: "Turkish", label: "Türkçe", speechCode: "tr-TR", deepgramCode: "tr" },
   { code: "Malay", label: "Bahasa Melayu", speechCode: "ms-MY", deepgramCode: "ms" },
   { code: "Indonesian", label: "Indonesian", speechCode: "id-ID", deepgramCode: "id" },
   { code: "Bengali", label: "Bengali", speechCode: "bn-BD", deepgramCode: "bn" },
@@ -36,22 +36,24 @@ interface SavedSession {
 }
 
 const STORAGE_KEY = "livelisten_sessions";
+const ONBOARDING_KEY = "livelisten_onboarded";
 
 function loadSessions(): SavedSession[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
   } catch { return []; }
 }
 
 function saveSessions(sessions: SavedSession[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions)); } catch { /* quota exceeded */ }
 }
 
 function saveSession(session: SavedSession) {
   const sessions = loadSessions();
   sessions.unshift(session);
-  // Keep last 50 sessions
   if (sessions.length > 50) sessions.length = 50;
   saveSessions(sessions);
 }
@@ -114,6 +116,20 @@ function useAudioVisualizer(stream: MediaStream | null) {
   return levels;
 }
 
+// --- Online/offline detection hook ---
+function useOnlineStatus() {
+  const [isOnline, setIsOnline] = useState(true);
+  useEffect(() => {
+    setIsOnline(navigator.onLine);
+    const goOnline = () => setIsOnline(true);
+    const goOffline = () => setIsOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => { window.removeEventListener("online", goOnline); window.removeEventListener("offline", goOffline); };
+  }, []);
+  return isOnline;
+}
+
 export default function LiveListen() {
   const [isListening, setIsListening] = useState(false);
   const [fullOriginal, setFullOriginal] = useState("");
@@ -133,6 +149,9 @@ export default function LiveListen() {
   const [showHistory, setShowHistory] = useState(false);
   const [viewingSession, setViewingSession] = useState<SavedSession | null>(null);
   const [sessions, setSessions] = useState<SavedSession[]>([]);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
+  const isOnline = useOnlineStatus();
 
   const leftPanelRef = useRef<HTMLDivElement>(null);
   const rightPanelRef = useRef<HTMLDivElement>(null);
@@ -147,13 +166,20 @@ export default function LiveListen() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
+  const settingsRef = useRef<HTMLDivElement>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
 
   const audioLevels = useAudioVisualizer(micStream);
 
   useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
 
-  // Load saved sessions on mount
-  useEffect(() => { setSessions(loadSessions()); }, []);
+  // Load saved sessions + check onboarding on mount
+  useEffect(() => {
+    setSessions(loadSessions());
+    if (!localStorage.getItem(ONBOARDING_KEY)) {
+      setShowOnboarding(true);
+    }
+  }, []);
 
   // Register service worker for PWA
   useEffect(() => {
@@ -184,6 +210,39 @@ export default function LiveListen() {
     if (rightPanelRef.current) rightPanelRef.current.scrollTop = rightPanelRef.current.scrollHeight;
   }, [fullOriginal, fullTranslation, currentPartial, streamingTranslation]);
 
+  // Focus trap for modals
+  useEffect(() => {
+    if (!showSettings && !showHistory) return;
+    const ref = showSettings ? settingsRef : historyRef;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (showSettings) setShowSettings(false);
+        if (showHistory) setShowHistory(false);
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const modal = ref.current;
+      if (!modal) return;
+      const focusable = modal.querySelectorAll<HTMLElement>('button, select, input, [tabindex]:not([tabindex="-1"])');
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    // Focus first focusable element
+    const modal = ref.current;
+    if (modal) {
+      const first = modal.querySelector<HTMLElement>('button, select, input');
+      first?.focus();
+    }
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [showSettings, showHistory]);
+
   const getBestVoice = useCallback((): SpeechSynthesisVoice | null => {
     const voices = speechSynthesis.getVoices();
     if (!voices.length) return null;
@@ -202,7 +261,7 @@ export default function LiveListen() {
     speechSynthesis.speak(u);
   }, [voiceEnabled, targetLang.speechCode, getBestVoice]);
 
-  const translateText = useCallback(async (text: string, isInterim = false) => {
+  const translateText = useCallback(async (text: string, isInterim = false, retryCount = 0) => {
     if (!text.trim()) return;
     if (isInterim && abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
@@ -211,10 +270,21 @@ export default function LiveListen() {
     try {
       const res = await fetch("/api/translate", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, sourceLang: sourceLang.code, targetLang: targetLang.code, stream: true }),
+        body: JSON.stringify({ text: text.slice(0, 2000), sourceLang: sourceLang.code, targetLang: targetLang.code, stream: true }),
         signal: controller.signal,
       });
-      if (!res.ok) { const d = await res.json(); if (d.error) setError(d.error); return; }
+      if (!res.ok) {
+        let errorMsg = "Translation service error";
+        try { const d = await res.json(); if (d.error) errorMsg = d.error; } catch { /* non-JSON response */ }
+        if (res.status === 429) { errorMsg = "Rate limited — please wait a moment"; }
+        setError(errorMsg);
+        // Retry on 5xx errors with exponential backoff (max 3 retries)
+        if (res.status >= 500 && retryCount < 3) {
+          const delay = Math.pow(2, retryCount) * 1000;
+          setTimeout(() => translateText(text, isInterim, retryCount + 1), delay);
+        }
+        return;
+      }
       const reader = res.body?.getReader(); if (!reader) return;
       const decoder = new TextDecoder();
       let result = "";
@@ -230,18 +300,46 @@ export default function LiveListen() {
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return;
-      console.error(e); if (!isInterim) setError("Translation service error");
+      console.error(e);
+      if (!isInterim) {
+        // Retry on network errors
+        if (retryCount < 3) {
+          const delay = Math.pow(2, retryCount) * 1000;
+          setTimeout(() => translateText(text, isInterim, retryCount + 1), delay);
+        } else {
+          setError("Translation failed — please check your connection");
+        }
+      }
     } finally { if (isInterim) abortRef.current = null; }
   }, [sourceLang.code, targetLang.code, speak]);
 
   const startDeepgram = useCallback(async () => {
     setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial("");
+
+    if (!navigator.onLine) {
+      setError("You are offline. Please check your connection.");
+      return false;
+    }
+
     try {
       const tokenRes = await fetch("/api/deepgram-token");
       const tokenData = await tokenRes.json();
       if (tokenData.error) { setError(tokenData.error + " — using browser recognition"); setUseDeepgram(false); return false; }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true } });
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true } });
+      } catch (micErr) {
+        const err = micErr as DOMException;
+        if (err.name === "NotAllowedError") {
+          setError("Microphone access denied. Please allow microphone access in your browser settings.");
+        } else if (err.name === "NotFoundError") {
+          setError("No microphone found. Please connect a microphone and try again.");
+        } else {
+          setError("Could not access microphone. Please check your device settings.");
+        }
+        return false;
+      }
       setMicStream(stream);
 
       const wsUrl = `wss://api.deepgram.com/v1/listen?language=${sourceLang.deepgramCode}&model=nova-3&punctuate=true&interim_results=true&utterance_end_ms=1000&vad_events=true&smart_format=true&encoding=linear16&sample_rate=16000`;
@@ -264,7 +362,8 @@ export default function LiveListen() {
       };
 
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
         if (data.type === "Results") {
           const transcript = data.channel?.alternatives?.[0]?.transcript || "";
           const isFinal = data.is_final;
@@ -302,7 +401,22 @@ export default function LiveListen() {
 
   const startBrowserRecognition = useCallback(async () => {
     setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial("");
-    try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); setMicStream(s); } catch { /* */ }
+
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setMicStream(s);
+    } catch (micErr) {
+      const err = micErr as DOMException;
+      if (err.name === "NotAllowedError") {
+        setError("Microphone access denied. Please allow microphone access in your browser settings.");
+      } else if (err.name === "NotFoundError") {
+        setError("No microphone found. Please connect a microphone.");
+      } else {
+        setError("Could not access microphone.");
+      }
+      return;
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) { setError("Speech recognition not supported. Try Chrome or Safari."); return; }
@@ -328,6 +442,10 @@ export default function LiveListen() {
   }, [sourceLang.speechCode, translateText]);
 
   const startListening = useCallback(async () => {
+    if (!navigator.onLine) {
+      setError("You are offline. Translation requires an internet connection.");
+      return;
+    }
     if (useDeepgram) { const ok = await startDeepgram(); if (!ok) startBrowserRecognition(); }
     else startBrowserRecognition();
   }, [useDeepgram, startDeepgram, startBrowserRecognition]);
@@ -345,7 +463,6 @@ export default function LiveListen() {
     if (pendingTextRef.current.trim()) { const r = pendingTextRef.current; pendingTextRef.current = ""; translateText(r, false); }
 
     // Auto-save session if there's content
-    // Use setTimeout to let final translation complete
     setTimeout(() => {
       setFullOriginal((orig) => {
         setFullTranslation((trans) => {
@@ -373,6 +490,11 @@ export default function LiveListen() {
     return () => { if (recognitionRef.current) { recognitionRef.current.onend = null; recognitionRef.current.abort(); } if (wsRef.current) { try { wsRef.current.close(); } catch { /* */ } } speechSynthesis.cancel(); };
   }, []);
 
+  const dismissOnboarding = () => {
+    setShowOnboarding(false);
+    try { localStorage.setItem(ONBOARDING_KEY, "1"); } catch { /* */ }
+  };
+
   const sourceIsRTL = isRTL(sourceLang.code);
   const targetIsRTL = isRTL(targetLang.code);
   const displayOriginal = fullOriginal + (currentPartial ? (fullOriginal ? " " : "") + currentPartial : "");
@@ -380,35 +502,109 @@ export default function LiveListen() {
   const origWords = wordCount(displayOriginal);
   const transWords = wordCount(displayTranslation);
 
+  // --- Offline banner ---
+  const offlineBanner = !isOnline && (
+    <div className="offline-banner" role="alert" aria-live="assertive">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <line x1="1" y1="1" x2="23" y2="23" /><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" /><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" /><path d="M10.71 5.05A16 16 0 0 1 22.56 9" /><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" />
+      </svg>
+      <span>You are offline</span>
+    </div>
+  );
+
+  // --- Error banner ---
+  const errorBanner = error && (
+    <div className="error-banner" role="alert" aria-live="polite">
+      <span>{error}</span>
+      <button onClick={() => setError(null)} className="ml-3 opacity-70 hover:opacity-100" aria-label="Dismiss error">&times;</button>
+    </div>
+  );
+
+  // --- Onboarding modal ---
+  if (showOnboarding) {
+    return (
+      <div className="h-dvh flex flex-col items-center justify-center px-8" style={{ background: "var(--bg)" }}>
+        <div className="w-full max-w-sm fade-in text-center">
+          <div className="mb-6">
+            <div className="w-16 h-16 rounded-full mx-auto flex items-center justify-center mb-4" style={{ background: "var(--accent-gradient)" }}>
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            </div>
+            <h1 className="text-2xl font-semibold mb-2" style={{ fontFamily: "var(--font-serif)", color: "var(--text)" }}>
+              Welcome to LiveListen
+            </h1>
+            <p className="mb-6" style={{ fontFamily: "var(--font-serif)", fontSize: 15, color: "var(--text-dim)", lineHeight: 1.6 }}>
+              Real-time translation for sermons, speeches, and conversations.
+            </p>
+          </div>
+
+          <div className="space-y-4 mb-8 text-left">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center" style={{ background: "rgba(196, 168, 130, 0.1)" }}>
+                <span style={{ color: "var(--accent)", fontSize: 14, fontWeight: 600 }}>1</span>
+              </div>
+              <div>
+                <p style={{ fontFamily: "var(--font-sans)", fontSize: 14, fontWeight: 500, color: "var(--text)" }}>Allow microphone access</p>
+                <p style={{ fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--text-muted)" }}>LiveListen needs your microphone to hear and translate speech in real-time.</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center" style={{ background: "rgba(196, 168, 130, 0.1)" }}>
+                <span style={{ color: "var(--accent)", fontSize: 14, fontWeight: 600 }}>2</span>
+              </div>
+              <div>
+                <p style={{ fontFamily: "var(--font-sans)", fontSize: 14, fontWeight: 500, color: "var(--text)" }}>Choose your languages</p>
+                <p style={{ fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--text-muted)" }}>Set the source and target languages in Settings before starting.</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center" style={{ background: "rgba(196, 168, 130, 0.1)" }}>
+                <span style={{ color: "var(--accent)", fontSize: 14, fontWeight: 600 }}>3</span>
+              </div>
+              <div>
+                <p style={{ fontFamily: "var(--font-sans)", fontSize: 14, fontWeight: 500, color: "var(--text)" }}>Tap to start</p>
+                <p style={{ fontFamily: "var(--font-sans)", fontSize: 12, color: "var(--text-muted)" }}>Tap the microphone button and the translation will appear as the speaker talks.</p>
+              </div>
+            </div>
+          </div>
+
+          <button onClick={dismissOnboarding} className="w-full py-3.5 rounded-2xl text-white font-medium" style={{ background: "var(--accent-gradient)", fontFamily: "var(--font-sans)", fontSize: 15 }}>
+            Get Started
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // --- Welcome screen (not listening, no text) ---
   if (!isListening && !displayOriginal && !displayTranslation) {
     return (
       <div className="h-dvh flex flex-col relative overflow-hidden" style={{ background: "var(--bg)" }}>
-        {/* Ambient orbs for warmth */}
-        <div className="absolute inset-0 pointer-events-none">
+        {offlineBanner}
+        <div className="absolute inset-0 pointer-events-none" aria-hidden="true">
           <div className="ambient-orb ambient-orb-1" />
           <div className="ambient-orb ambient-orb-2" />
         </div>
 
-        {/* Top bar */}
         <header className="flex items-center justify-between px-5 py-4 shrink-0 relative z-10">
           {sessions.length > 0 ? (
-            <button onClick={() => setShowHistory(true)} className="flex items-center gap-1.5 p-2 rounded-xl" style={{ color: "var(--text-muted)" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <button onClick={() => setShowHistory(true)} className="flex items-center gap-1.5 p-2 rounded-xl" style={{ color: "var(--text-muted)" }} aria-label="View session history">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="10" />
               </svg>
               <span style={{ fontSize: 12, fontFamily: "var(--font-sans)", fontWeight: 500 }}>History</span>
             </button>
           ) : <div />}
-          <button onClick={() => setShowSettings(true)} className="p-2 rounded-xl" style={{ color: "var(--text-muted)" }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <button onClick={() => setShowSettings(true)} className="p-2 rounded-xl" style={{ color: "var(--text-muted)" }} aria-label="Open settings">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
           </button>
         </header>
 
-        {/* Welcome content */}
         <div className="flex-1 flex flex-col items-center justify-center px-8 relative z-10 fade-in">
           <h1 className="text-3xl font-semibold tracking-tight mb-3" style={{ fontFamily: "var(--font-serif)", color: "var(--text)" }}>
             LiveListen
@@ -420,22 +616,21 @@ export default function LiveListen() {
             Tap below to begin listening. The translation will appear as the speaker talks.
           </p>
 
-          {/* Language indicator */}
-          <div className="flex items-center gap-3 mb-10">
+          <div className="flex items-center gap-3 mb-10" aria-label={`Translating from ${sourceLang.label} to ${targetLang.label}`}>
             <span style={{ fontFamily: "var(--font-sans)", fontSize: 13, fontWeight: 500, color: "var(--text-dim)" }}>{sourceLang.label}</span>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M5 12h14M12 5l7 7-7 7" />
             </svg>
             <span style={{ fontFamily: "var(--font-sans)", fontSize: 13, fontWeight: 500, color: "var(--text-dim)" }}>{targetLang.label}</span>
           </div>
 
-          {/* Start button */}
           <div className="relative">
             <button
               onClick={startListening}
               className="relative w-20 h-20 rounded-full flex items-center justify-center glow-btn"
-              style={{ background: "var(--accent-gradient)", border: "none", cursor: "pointer", zIndex: 1 }}>
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              style={{ background: "var(--accent-gradient)", border: "none", cursor: "pointer", zIndex: 1 }}
+              aria-label="Start listening and translating">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
                 <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
@@ -448,14 +643,7 @@ export default function LiveListen() {
           </p>
         </div>
 
-        {/* Error */}
-        {error && (
-          <div className="absolute bottom-6 left-4 right-4 px-4 py-3 rounded-xl text-sm flex items-center justify-between z-20"
-            style={{ background: "rgba(194, 112, 112, 0.1)", color: "var(--danger)", border: "1px solid rgba(194, 112, 112, 0.15)" }}>
-            <span>{error}</span>
-            <button onClick={() => setError(null)} className="ml-3 opacity-70 hover:opacity-100">&times;</button>
-          </div>
-        )}
+        {errorBanner && <div className="absolute bottom-6 left-4 right-4 z-20">{errorBanner}</div>}
 
         {renderSettings()}
         {renderHistory()}
@@ -471,8 +659,8 @@ export default function LiveListen() {
     return (
       <div className="h-dvh flex flex-col" style={{ background: "var(--bg)" }}>
         <header className="flex items-center justify-between px-5 py-3 shrink-0" style={{ borderBottom: "1px solid var(--surface-border)" }}>
-          <button onClick={() => setViewingSession(null)} className="flex items-center gap-2 p-1" style={{ color: "var(--accent)" }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <button onClick={() => setViewingSession(null)} className="flex items-center gap-2 p-1" style={{ color: "var(--accent)" }} aria-label="Go back to main screen">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M19 12H5M12 19l-7-7 7-7" />
             </svg>
             <span style={{ fontFamily: "var(--font-sans)", fontSize: 13, fontWeight: 500 }}>Back</span>
@@ -485,7 +673,7 @@ export default function LiveListen() {
           </div>
         </header>
 
-        <div className="flex-1 flex min-h-0">
+        <div className="flex-1 flex flex-col lg:flex-row min-h-0">
           <div className="flex-1 flex flex-col min-h-0">
             <div className="px-5 py-2.5 shrink-0" style={{ borderBottom: "1px solid var(--surface-border)" }}>
               <span className="panel-label">{viewingSession.targetLang}</span>
@@ -494,7 +682,7 @@ export default function LiveListen() {
               <div className="transcript-translation">{viewingSession.translation || <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>No translation recorded</span>}</div>
             </div>
           </div>
-          <div className="panel-divider shrink-0" />
+          <div className="panel-divider-responsive shrink-0" />
           <div className="flex-1 flex flex-col min-h-0">
             <div className="px-5 py-2.5 shrink-0" style={{ borderBottom: "1px solid var(--surface-border)" }}>
               <span className="panel-label">{viewingSession.sourceLang}</span>
@@ -511,23 +699,24 @@ export default function LiveListen() {
   // --- Active / transcript screen ---
   return (
     <div className="h-dvh flex flex-col relative overflow-hidden" style={{ background: "var(--bg)" }}>
+      {offlineBanner}
       {isListening && (
-        <div className="absolute inset-0 pointer-events-none z-0">
+        <div className="absolute inset-0 pointer-events-none z-0" aria-hidden="true">
           <div className="ambient-orb ambient-orb-1" />
           <div className="ambient-orb ambient-orb-2" />
           <div className="ambient-orb ambient-orb-3" />
         </div>
       )}
 
-      {/* Header */}
       <header className="flex items-center justify-between px-5 py-3 shrink-0 relative z-10" style={{ borderBottom: "1px solid var(--surface-border)" }}>
         <span style={{ fontFamily: "var(--font-serif)", fontSize: 16, fontWeight: 600, color: "var(--accent)" }}>LiveListen</span>
         <div className="flex items-center gap-3">
-          {isListening && <span className="elapsed-timer stat-badge">{formatTime(elapsed)}</span>}
+          {isListening && <span className="elapsed-timer stat-badge" aria-live="off" aria-label={`Elapsed time: ${formatTime(elapsed)}`}>{formatTime(elapsed)}</span>}
           <button onClick={() => setVoiceEnabled(!voiceEnabled)} className="p-1.5 rounded-lg transition-all"
             style={{ color: voiceEnabled ? "var(--accent)" : "var(--text-muted)" }}
-            title={voiceEnabled ? "Voice on" : "Voice off"}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            aria-label={voiceEnabled ? "Disable voice output" : "Enable voice output"}
+            aria-pressed={voiceEnabled}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               {voiceEnabled ? (
                 <><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" fill="currentColor" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /></>
               ) : (
@@ -535,39 +724,33 @@ export default function LiveListen() {
               )}
             </svg>
           </button>
-          <button onClick={() => setShowHistory(true)} className="p-1.5 rounded-lg" style={{ color: "var(--text-muted)" }} title="Session history">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <button onClick={() => setShowHistory(true)} className="p-1.5 rounded-lg" style={{ color: "var(--text-muted)" }} aria-label="View session history">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
             </svg>
           </button>
-          <button onClick={() => setShowSettings(true)} className="p-1.5 rounded-lg" style={{ color: "var(--text-muted)" }}>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="3" />
+          <button onClick={() => setShowSettings(true)} className="p-1.5 rounded-lg" style={{ color: "var(--text-muted)" }} aria-label="Open settings">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
           </button>
         </div>
       </header>
 
-      {error && (
-        <div className="mx-4 mt-2 px-4 py-2.5 rounded-xl text-sm shrink-0 flex items-center justify-between relative z-10"
-          style={{ background: "rgba(194, 112, 112, 0.1)", color: "var(--danger)", border: "1px solid rgba(194, 112, 112, 0.15)" }}>
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="ml-3 opacity-70 hover:opacity-100">&times;</button>
-        </div>
-      )}
+      {errorBanner && <div className="mx-4 mt-2 shrink-0 relative z-10">{errorBanner}</div>}
 
       {/* Split panels */}
-      <div className="flex-1 flex min-h-0 relative z-10">
+      <div className="flex-1 flex flex-col lg:flex-row min-h-0 relative z-10">
         {/* LEFT: Translation */}
         <div className={`flex-1 flex flex-col min-h-0 ${isListening ? "panel-breathing" : ""}`}>
           <div className="px-5 py-2.5 shrink-0 flex items-center justify-between" style={{ borderBottom: "1px solid var(--surface-border)" }}>
             <span className="panel-label">{targetLang.label}</span>
-            {transWords > 0 && <span className="stat-badge">{transWords} words</span>}
+            {transWords > 0 && <span className="stat-badge" aria-label={`${transWords} words translated`}>{transWords} words</span>}
           </div>
           <div ref={leftPanelRef} className="flex-1 overflow-y-auto px-6 py-5" style={{ direction: targetIsRTL ? "rtl" : "ltr" }}>
             {!displayTranslation && isListening && (
               <div className="flex flex-col items-center justify-center h-full gap-4 fade-in">
-                <div className="visualizer-container">
+                <div className="visualizer-container" aria-hidden="true">
                   {audioLevels.slice(0, 12).map((l, i) => (
                     <div key={i} className="viz-bar" style={{ height: `${Math.max(2, l * 36)}px` }} />
                   ))}
@@ -576,25 +759,25 @@ export default function LiveListen() {
               </div>
             )}
             {displayTranslation && (
-              <div className={`transcript-translation ${streamingTranslation ? "streaming-cursor" : ""}`}>
+              <div className={`transcript-translation ${streamingTranslation ? "streaming-cursor" : ""}`} dir={targetIsRTL ? "rtl" : "ltr"}>
                 {displayTranslation}
               </div>
             )}
           </div>
         </div>
 
-        <div className="panel-divider shrink-0" />
+        <div className="panel-divider-responsive shrink-0" />
 
         {/* RIGHT: Original */}
         <div className={`flex-1 flex flex-col min-h-0 ${isListening ? "panel-breathing" : ""}`}>
           <div className="px-5 py-2.5 shrink-0 flex items-center justify-between" style={{ borderBottom: "1px solid var(--surface-border)" }}>
             <span className="panel-label">{sourceLang.label}</span>
-            {origWords > 0 && <span className="stat-badge">{origWords} words</span>}
+            {origWords > 0 && <span className="stat-badge" aria-label={`${origWords} words recognized`}>{origWords} words</span>}
           </div>
           <div ref={rightPanelRef} className="flex-1 overflow-y-auto px-6 py-5" style={{ direction: sourceIsRTL ? "rtl" : "ltr" }}>
             {!displayOriginal && isListening && (
               <div className="flex flex-col items-center justify-center h-full gap-4 fade-in">
-                <div className="visualizer-container">
+                <div className="visualizer-container" aria-hidden="true">
                   {audioLevels.map((l, i) => (
                     <div key={i} className="viz-bar" style={{ height: `${Math.max(2, l * 36)}px` }} />
                   ))}
@@ -603,7 +786,7 @@ export default function LiveListen() {
               </div>
             )}
             {displayOriginal && (
-              <div className={sourceIsRTL ? "transcript-original-rtl" : "transcript-original"}>
+              <div className={sourceIsRTL ? "transcript-original-rtl" : "transcript-original"} dir={sourceIsRTL ? "rtl" : "ltr"}>
                 {fullOriginal && <span>{fullOriginal} </span>}
                 {currentPartial && <span className="transcript-partial">{currentPartial}</span>}
               </div>
@@ -615,7 +798,7 @@ export default function LiveListen() {
       {/* Bottom */}
       <div className="shrink-0 py-3 flex items-center justify-center gap-4 glass relative z-10" style={{ borderTop: "1px solid var(--surface-border)" }}>
         {isListening && (
-          <div className="flex items-center gap-1 h-7">
+          <div className="flex items-center gap-1 h-7" aria-hidden="true">
             {audioLevels.slice(0, 8).map((l, i) => (
               <div key={i} className="viz-bar" style={{ height: `${Math.max(2, l * 24)}px` }} />
             ))}
@@ -623,7 +806,7 @@ export default function LiveListen() {
         )}
 
         <div className="relative">
-          {isListening && (<><div className="mic-ripple" /><div className="mic-ripple" /><div className="mic-ripple" /></>)}
+          {isListening && (<><div className="mic-ripple" aria-hidden="true" /><div className="mic-ripple" aria-hidden="true" /><div className="mic-ripple" aria-hidden="true" /></>)}
           <button onClick={isListening ? stopListening : startListening}
             className={`relative w-12 h-12 rounded-full flex items-center justify-center transition-all ${isListening ? "" : "glow-btn"}`}
             style={{
@@ -631,11 +814,12 @@ export default function LiveListen() {
               border: "none", cursor: "pointer",
               boxShadow: isListening ? "0 0 20px rgba(194, 112, 112, 0.2)" : undefined,
               zIndex: 1,
-            }}>
+            }}
+            aria-label={isListening ? "Stop listening" : "Start listening and translating"}>
             {isListening ? (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="white"><rect x="6" y="6" width="12" height="12" rx="3" /></svg>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="white" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3" /></svg>
             ) : (
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" />
                 <line x1="12" y1="19" x2="12" y2="23" /><line x1="8" y1="23" x2="16" y2="23" />
               </svg>
@@ -644,7 +828,7 @@ export default function LiveListen() {
         </div>
 
         {isListening && (
-          <div className="flex items-center gap-1 h-7">
+          <div className="flex items-center gap-1 h-7" aria-hidden="true">
             {audioLevels.slice(8, 16).map((l, i) => (
               <div key={i} className="viz-bar" style={{ height: `${Math.max(2, l * 24)}px` }} />
             ))}
@@ -660,12 +844,12 @@ export default function LiveListen() {
   function renderHistory() {
     if (!showHistory) return null;
     return (
-      <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.65)" }} onClick={() => setShowHistory(false)}>
-        <div className="w-full max-w-lg rounded-t-3xl p-6 pb-10 glass fade-in" style={{ border: "1px solid var(--surface-border)", borderBottom: "none", maxHeight: "75vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
+      <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.65)" }} onClick={() => setShowHistory(false)} role="dialog" aria-modal="true" aria-label="Session history">
+        <div ref={historyRef} className="w-full max-w-lg rounded-t-3xl p-6 pb-10 glass fade-in" style={{ border: "1px solid var(--surface-border)", borderBottom: "none", maxHeight: "75vh", display: "flex", flexDirection: "column" }} onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-between mb-4 shrink-0">
             <h2 style={{ fontFamily: "var(--font-serif)", fontSize: 20, fontWeight: 600, color: "var(--text)" }}>Session History</h2>
-            <button onClick={() => setShowHistory(false)} className="p-1.5 rounded-lg" style={{ color: "var(--text-dim)" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            <button onClick={() => setShowHistory(false)} className="p-1.5 rounded-lg" style={{ color: "var(--text-dim)" }} aria-label="Close history">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
             </button>
           </div>
           <div className="flex-1 overflow-y-auto space-y-2">
@@ -676,7 +860,10 @@ export default function LiveListen() {
             )}
             {sessions.map((s) => (
               <div key={s.id} className="flex items-center justify-between rounded-xl p-3 transition-colors" style={{ background: "rgba(196, 168, 130, 0.04)", border: "1px solid var(--surface-border)", cursor: "pointer" }}
-                onClick={() => { setShowHistory(false); setViewingSession(s); }}>
+                onClick={() => { setShowHistory(false); setViewingSession(s); }}
+                role="button" tabIndex={0}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setShowHistory(false); setViewingSession(s); } }}
+                aria-label={`Session: ${s.sourceLang} to ${s.targetLang}, ${formatDate(s.date)}`}>
                 <div className="flex-1 min-w-0">
                   <p style={{ fontFamily: "var(--font-sans)", fontSize: 12, fontWeight: 500, color: "var(--text-dim)", marginBottom: 2 }}>
                     {formatDate(s.date)}
@@ -693,12 +880,12 @@ export default function LiveListen() {
                 <div className="flex items-center gap-2 ml-3 shrink-0">
                   <button className="p-1.5 rounded-lg transition-colors" style={{ color: "var(--text-muted)" }}
                     onClick={(e) => { e.stopPropagation(); deleteSession(s.id); setSessions(loadSessions()); }}
-                    title="Delete">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    aria-label={`Delete session from ${formatDate(s.date)}`}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                       <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
                     </svg>
                   </button>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <polyline points="9 18 15 12 9 6" />
                   </svg>
                 </div>
@@ -711,37 +898,36 @@ export default function LiveListen() {
   }
 
   function renderSessionViewer() {
-    // This is handled by the top-level viewingSession check now
     return null;
   }
 
   function renderSettings() {
     if (!showSettings) return null;
     return (
-      <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.65)" }} onClick={() => setShowSettings(false)}>
-        <div className="w-full max-w-lg rounded-t-3xl p-6 pb-10 glass fade-in" style={{ border: "1px solid var(--surface-border)", borderBottom: "none" }} onClick={(e) => e.stopPropagation()}>
+      <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: "rgba(0,0,0,0.65)" }} onClick={() => setShowSettings(false)} role="dialog" aria-modal="true" aria-label="Settings">
+        <div ref={settingsRef} className="w-full max-w-lg rounded-t-3xl p-6 pb-10 glass fade-in" style={{ border: "1px solid var(--surface-border)", borderBottom: "none" }} onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-between mb-6">
             <h2 style={{ fontFamily: "var(--font-serif)", fontSize: 20, fontWeight: 600, color: "var(--text)" }}>Settings</h2>
-            <button onClick={() => setShowSettings(false)} className="p-1.5 rounded-lg" style={{ color: "var(--text-dim)" }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            <button onClick={() => setShowSettings(false)} className="p-1.5 rounded-lg" style={{ color: "var(--text-dim)" }} aria-label="Close settings">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
             </button>
           </div>
           <div className="space-y-5">
             <div>
-              <label className="block text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Source Language</label>
-              <select value={sourceLang.code} onChange={(e) => { const l = LANGUAGES.find((x) => x.code === e.target.value); if (l) setSourceLang(l); }} className="settings-select">
+              <label htmlFor="source-lang" className="block text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Source Language</label>
+              <select id="source-lang" value={sourceLang.code} onChange={(e) => { const l = LANGUAGES.find((x) => x.code === e.target.value); if (l) setSourceLang(l); }} className="settings-select">
                 {LANGUAGES.map((l) => (<option key={l.code} value={l.code}>{l.label}</option>))}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Target Language</label>
-              <select value={targetLang.code} onChange={(e) => { const l = LANGUAGES.find((x) => x.code === e.target.value); if (l) setTargetLang(l); }} className="settings-select">
+              <label htmlFor="target-lang" className="block text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Target Language</label>
+              <select id="target-lang" value={targetLang.code} onChange={(e) => { const l = LANGUAGES.find((x) => x.code === e.target.value); if (l) setTargetLang(l); }} className="settings-select">
                 {LANGUAGES.map((l) => (<option key={l.code} value={l.code}>{l.label}</option>))}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Voice</label>
-              <select value={selectedVoiceURI} onChange={(e) => setSelectedVoiceURI(e.target.value)} className="settings-select">
+              <label htmlFor="voice-select" className="block text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Voice</label>
+              <select id="voice-select" value={selectedVoiceURI} onChange={(e) => setSelectedVoiceURI(e.target.value)} className="settings-select">
                 <option value="">Auto</option>
                 {availableVoices.filter((v) => v.lang.startsWith(targetLang.speechCode.split("-")[0])).map((v) => (
                   <option key={v.voiceURI} value={v.voiceURI}>{v.name}{v.localService ? "" : " (cloud)"}</option>
@@ -749,8 +935,8 @@ export default function LiveListen() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Speech Engine</label>
-              <select value={useDeepgram ? "deepgram" : "browser"} onChange={(e) => setUseDeepgram(e.target.value === "deepgram")} className="settings-select">
+              <label htmlFor="engine-select" className="block text-xs font-medium mb-2 uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>Speech Engine</label>
+              <select id="engine-select" value={useDeepgram ? "deepgram" : "browser"} onChange={(e) => setUseDeepgram(e.target.value === "deepgram")} className="settings-select">
                 <option value="deepgram">Deepgram Nova-3</option>
                 <option value="browser">Browser built-in</option>
               </select>
