@@ -124,6 +124,9 @@ export default function LiveListen() {
     speechSynthesis.speak(u);
   }, [voiceEnabled, targetLang.speechCode, getBestVoice]);
 
+  // Track accumulated original text for context
+  const accumulatedOriginalRef = useRef("");
+
   const translateText = useCallback(async (text: string, isInterim = false, retryCount = 0) => {
     if (!text.trim()) return;
     if (isInterim && abortRef.current) abortRef.current.abort();
@@ -133,7 +136,13 @@ export default function LiveListen() {
     try {
       const res = await fetch(`${API_BASE_URL}/api/translate`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text.slice(0, 2000), sourceLang: sourceLang.code, targetLang: targetLang.code, stream: true }),
+        body: JSON.stringify({
+          text: text.slice(0, 2000),
+          sourceLang: sourceLang.code,
+          targetLang: targetLang.code,
+          stream: true,
+          context: accumulatedOriginalRef.current || undefined,
+        }),
         signal: controller.signal,
       });
       if (!res.ok) {
@@ -156,6 +165,7 @@ export default function LiveListen() {
         setStreamingTranslation(result);
       }
       if (!isInterim) {
+        accumulatedOriginalRef.current += (accumulatedOriginalRef.current ? " " : "") + text;
         setFullOriginal((prev) => prev + (prev ? " " : "") + text);
         setFullTranslation((prev) => prev + (prev ? " " : "") + result);
         setStreamingTranslation(""); setCurrentPartial(""); speak(result);
@@ -175,7 +185,7 @@ export default function LiveListen() {
   }, [sourceLang.code, targetLang.code, speak]);
 
   const startDeepgram = useCallback(async () => {
-    setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial("");
+    setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial(""); accumulatedOriginalRef.current = "";
 
     if (!navigator.onLine) {
       setError("You are offline. Please check your connection.");
@@ -205,7 +215,7 @@ export default function LiveListen() {
       setMicDenied(false);
       setMicStream(stream);
 
-      const wsUrl = `wss://api.deepgram.com/v1/listen?language=${sourceLang.deepgramCode}&model=nova-3&punctuate=true&interim_results=true&utterance_end_ms=1000&vad_events=true&smart_format=true&encoding=linear16&sample_rate=16000`;
+      const wsUrl = `wss://api.deepgram.com/v1/listen?language=${sourceLang.deepgramCode}&model=nova-3&punctuate=true&interim_results=true&utterance_end_ms=2000&vad_events=true&smart_format=true&encoding=linear16&sample_rate=16000&diarize=false&profanity_filter=false&redact=false&numerals=false`;
       const ws = new WebSocket(wsUrl, ["token", tokenData.key]);
       wsRef.current = ws;
 
@@ -263,7 +273,7 @@ export default function LiveListen() {
   }, [sourceLang.deepgramCode, translateText]);
 
   const startBrowserRecognition = useCallback(async () => {
-    setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial("");
+    setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial(""); accumulatedOriginalRef.current = "";
 
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
