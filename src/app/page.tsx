@@ -35,6 +35,8 @@ export default function LiveListen() {
   const [sessions, setSessions] = useState<SavedSession[]>([]);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [micDenied, setMicDenied] = useState(false);
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [usingFallbackEngine, setUsingFallbackEngine] = useState(false);
 
   const isOnline = useOnlineStatus();
   const prefersReducedMotion = useReducedMotion();
@@ -124,14 +126,19 @@ export default function LiveListen() {
     speechSynthesis.speak(u);
   }, [voiceEnabled, targetLang.speechCode, getBestVoice]);
 
-  // Track accumulated original text for context
+  // Track accumulated original text for context (trimmed to prevent unbounded growth)
   const accumulatedOriginalRef = useRef("");
+  // Track full text via refs for reliable session saving (no setState race)
+  const fullOriginalRef = useRef("");
+  const fullTranslationRef = useRef("");
 
   const translateText = useCallback(async (text: string, isInterim = false, retryCount = 0) => {
     if (!text.trim()) return;
     if (isInterim && abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     if (isInterim) abortRef.current = controller;
+    if (!isInterim) setIsTranslating(true);
+    if (retryCount > 0 && !isInterim) setError(`Retrying translation (attempt ${retryCount + 1}/4)...`);
 
     try {
       const res = await fetch(`${API_BASE_URL}/api/translate`, {
@@ -166,9 +173,17 @@ export default function LiveListen() {
       }
       if (!isInterim) {
         accumulatedOriginalRef.current += (accumulatedOriginalRef.current ? " " : "") + text;
-        setFullOriginal((prev) => prev + (prev ? " " : "") + text);
-        setFullTranslation((prev) => prev + (prev ? " " : "") + result);
-        setStreamingTranslation(""); setCurrentPartial(""); speak(result);
+        // Trim accumulated context to prevent unbounded growth
+        if (accumulatedOriginalRef.current.length > 3000) {
+          accumulatedOriginalRef.current = accumulatedOriginalRef.current.slice(-1500);
+        }
+        fullOriginalRef.current += (fullOriginalRef.current ? " " : "") + text;
+        fullTranslationRef.current += (fullTranslationRef.current ? " " : "") + result;
+        setFullOriginal(fullOriginalRef.current);
+        setFullTranslation(fullTranslationRef.current);
+        setStreamingTranslation(""); setCurrentPartial(""); setIsTranslating(false);
+        if (retryCount > 0) setError(null); // Clear retry message on success
+        speak(result);
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") return;
@@ -179,13 +194,15 @@ export default function LiveListen() {
           setTimeout(() => translateText(text, isInterim, retryCount + 1), delay);
         } else {
           setError("Translation failed — please check your connection");
+          setIsTranslating(false);
         }
       }
     } finally { if (isInterim) abortRef.current = null; }
   }, [sourceLang.code, targetLang.code, speak]);
 
   const startDeepgram = useCallback(async () => {
-    setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial(""); accumulatedOriginalRef.current = "";
+    setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial("");
+    accumulatedOriginalRef.current = ""; fullOriginalRef.current = ""; fullTranslationRef.current = "";
 
     if (!navigator.onLine) {
       setError("You are offline. Please check your connection.");
@@ -195,7 +212,7 @@ export default function LiveListen() {
     try {
       const tokenRes = await fetch(`${API_BASE_URL}/api/deepgram-token`);
       const tokenData = await tokenRes.json();
-      if (tokenData.error) { setError(tokenData.error + " — using browser recognition"); setUseDeepgram(false); return false; }
+      if (tokenData.error) { setError(tokenData.error + " — using browser recognition"); setUseDeepgram(false); setUsingFallbackEngine(true); return false; }
 
       let stream: MediaStream;
       try {
@@ -215,11 +232,24 @@ export default function LiveListen() {
       setMicDenied(false);
       setMicStream(stream);
 
-      const wsUrl = `wss://api.deepgram.com/v1/listen?language=${sourceLang.deepgramCode}&model=nova-3&punctuate=true&interim_results=true&utterance_end_ms=2000&vad_events=true&smart_format=true&encoding=linear16&sample_rate=16000&diarize=false&profanity_filter=false&redact=false&numerals=false`;
+      // utterance_end_ms=3000 gives more room for pauses in natural speech (was 2000)
+      // endpointing=400 fine-tunes when Deepgram considers speech has ended
+      const wsUrl = `wss://api.deepgram.com/v1/listen?language=${sourceLang.deepgramCode}&model=nova-3&punctuate=true&interim_results=true&utterance_end_ms=3000&vad_events=true&smart_format=true&encoding=linear16&sample_rate=16000&endpointing=400`;
       const ws = new WebSocket(wsUrl, ["token", tokenData.key]);
       wsRef.current = ws;
 
+      // Timeout if WebSocket doesn't connect within 10 seconds
+      const wsTimeout = setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          ws.close();
+          setError("Deepgram connection timed out — using browser recognition");
+          setUseDeepgram(false);
+          setUsingFallbackEngine(true);
+        }
+      }, 10000);
+
       ws.onopen = () => {
+        clearTimeout(wsTimeout);
         const audioCtx = new AudioContext({ sampleRate: 16000 });
         const source = audioCtx.createMediaStreamSource(stream);
         const processor = audioCtx.createScriptProcessor(4096, 1, 1);
@@ -231,7 +261,7 @@ export default function LiveListen() {
           ws.send(int16.buffer);
         };
         source.connect(processor); processor.connect(audioCtx.destination);
-        mediaRecorderRef.current = { stop: () => { processor.disconnect(); source.disconnect(); audioCtx.close(); } } as unknown as MediaRecorder;
+        mediaRecorderRef.current = { stop: () => { clearInterval(keepaliveInterval); processor.disconnect(); source.disconnect(); audioCtx.close(); } } as unknown as MediaRecorder;
       };
 
       ws.onmessage = (event) => {
@@ -246,9 +276,11 @@ export default function LiveListen() {
               setCurrentPartial(pendingTextRef.current);
               if (interimTimerRef.current) { clearTimeout(interimTimerRef.current); interimTimerRef.current = null; }
               if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+              // Longer debounce for Arabic/RTL languages (800ms) to capture fuller phrases
+              const debounceMs = sourceLang.deepgramCode === "ar" || sourceLang.deepgramCode === "ur" ? 800 : 500;
               debounceTimerRef.current = setTimeout(() => {
                 if (pendingTextRef.current.trim()) { const t = pendingTextRef.current; pendingTextRef.current = ""; translateText(t, false); }
-              }, 500);
+              }, debounceMs);
             } else {
               const display = [pendingTextRef.current, transcript].filter(Boolean).join(" ");
               setCurrentPartial(display);
@@ -266,14 +298,37 @@ export default function LiveListen() {
         }
       };
 
-      ws.onerror = () => { setError("Deepgram connection error — using browser recognition"); setUseDeepgram(false); };
-      ws.onclose = () => { if (pendingTextRef.current.trim() && isListeningRef.current) { const t = pendingTextRef.current; pendingTextRef.current = ""; translateText(t, false); } };
+      // Send keepalive every 8 seconds to prevent Deepgram timeout during silence
+      const keepaliveInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "KeepAlive" }));
+        }
+      }, 8000);
+
+      ws.onerror = () => {
+        clearTimeout(wsTimeout); clearInterval(keepaliveInterval);
+        setError("Deepgram connection error — switching to browser recognition");
+        setUseDeepgram(false); setUsingFallbackEngine(true);
+      };
+      ws.onclose = (event) => {
+        clearInterval(keepaliveInterval);
+        // Flush any remaining pending text
+        if (pendingTextRef.current.trim() && isListeningRef.current) {
+          const t = pendingTextRef.current; pendingTextRef.current = ""; translateText(t, false);
+        }
+        // If closed unexpectedly while still listening, notify user
+        if (isListeningRef.current && event.code !== 1000) {
+          setError("Deepgram connection lost — switching to browser recognition");
+          setUseDeepgram(false); setUsingFallbackEngine(true);
+        }
+      };
       setIsListening(true); return true;
-    } catch (e) { console.error(e); setError("Could not start Deepgram"); setUseDeepgram(false); return false; }
+    } catch (e) { console.error(e); setError("Could not start Deepgram — using browser recognition"); setUseDeepgram(false); setUsingFallbackEngine(true); return false; }
   }, [sourceLang.deepgramCode, translateText]);
 
   const startBrowserRecognition = useCallback(async () => {
-    setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial(""); accumulatedOriginalRef.current = "";
+    setError(null); setFullOriginal(""); setFullTranslation(""); setStreamingTranslation(""); setCurrentPartial("");
+    accumulatedOriginalRef.current = ""; fullOriginalRef.current = ""; fullTranslationRef.current = "";
 
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -311,7 +366,18 @@ export default function LiveListen() {
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (event: any) => { if (event.error === "no-speech" || event.error === "aborted") return; setError(`Microphone error: ${event.error}`); };
-    recognition.onend = () => { if (isListeningRef.current) { try { recognition.start(); } catch { /* */ } } };
+    let restartAttempts = 0;
+    recognition.onend = () => {
+      if (isListeningRef.current) {
+        if (restartAttempts >= 3) {
+          setError("Speech recognition stopped unexpectedly. Tap the mic to restart.");
+          setIsListening(false);
+          return;
+        }
+        try { restartAttempts++; recognition.start(); setTimeout(() => { restartAttempts = 0; }, 5000); }
+        catch { setError("Speech recognition stopped unexpectedly. Tap the mic to restart."); setIsListening(false); }
+      }
+    };
     recognitionRef.current = recognition;
     try { recognition.start(); setIsListening(true); } catch { setError("Could not start microphone."); }
   }, [sourceLang.speechCode, translateText]);
@@ -336,29 +402,33 @@ export default function LiveListen() {
     if (recognitionRef.current) { recognitionRef.current.onend = null; recognitionRef.current.abort(); recognitionRef.current = null; }
     if (micStream) { micStream.getTracks().forEach((t) => t.stop()); setMicStream(null); }
     speechSynthesis.cancel();
-    if (pendingTextRef.current.trim()) { const r = pendingTextRef.current; pendingTextRef.current = ""; translateText(r, false); }
+    // Translate any remaining pending text
+    const hasPending = pendingTextRef.current.trim();
+    if (hasPending) { const r = pendingTextRef.current; pendingTextRef.current = ""; translateText(r, false); }
 
+    // Save session using refs (reliable, no setState race condition)
+    // Delay slightly to allow final translateText to complete
+    const saveDelay = hasPending ? 3000 : 500;
     setTimeout(() => {
-      setFullOriginal((orig) => {
-        setFullTranslation((trans) => {
-          if (orig.trim() || trans.trim()) {
-            const session: SavedSession = {
-              id: Date.now().toString(),
-              date: new Date().toISOString(),
-              sourceLang: sourceLang.code,
-              targetLang: targetLang.code,
-              original: orig,
-              translation: trans,
-              duration: elapsed,
-            };
-            saveSession(session);
-            setSessions(loadSessions());
-          }
-          return trans;
-        });
-        return orig;
-      });
-    }, 2000);
+      const orig = fullOriginalRef.current;
+      const trans = fullTranslationRef.current;
+      if (orig.trim() || trans.trim()) {
+        const session: SavedSession = {
+          id: Date.now().toString(),
+          date: new Date().toISOString(),
+          sourceLang: sourceLang.code,
+          targetLang: targetLang.code,
+          original: orig,
+          translation: trans,
+          duration: elapsed,
+        };
+        const saved = saveSession(session);
+        if (!saved) {
+          setError("Could not save session — storage may be full.");
+        }
+        setSessions(loadSessions());
+      }
+    }, saveDelay);
   }, [translateText, micStream, sourceLang.code, targetLang.code, elapsed]);
 
   useEffect(() => {
@@ -527,6 +597,9 @@ export default function LiveListen() {
       <header className="flex items-center justify-between px-5 py-3 shrink-0 relative z-10" style={{ borderBottom: "1px solid var(--surface-border)" }}>
         <span style={{ fontFamily: "var(--font-serif)", fontSize: 16, fontWeight: 600, color: "var(--accent)" }}>LiveListen</span>
         <div className="flex items-center gap-3">
+          {isListening && usingFallbackEngine && (
+            <span className="stat-badge" style={{ color: "var(--accent)", fontSize: 9, opacity: 0.7 }} aria-label="Using browser speech engine">Browser</span>
+          )}
           {isListening && <span className="elapsed-timer stat-badge" aria-live="off" aria-label={`Elapsed time: ${formatTime(elapsed)}`}>{formatTime(elapsed)}</span>}
           <button onClick={() => setVoiceEnabled(!voiceEnabled)} className="p-1.5 rounded-lg transition-all"
             style={{ color: voiceEnabled ? "var(--accent)" : "var(--text-muted)" }}
@@ -569,7 +642,9 @@ export default function LiveListen() {
                     <div key={i} className="viz-bar" style={{ height: `${Math.max(2, l * 36)}px` }} />
                   ))}
                 </div>
-                <p style={{ fontFamily: "var(--font-serif)", fontSize: 15, color: "var(--text-muted)" }}>Waiting for speech...</p>
+                <p style={{ fontFamily: "var(--font-serif)", fontSize: 15, color: "var(--text-muted)" }}>
+                  {isTranslating ? "Translating..." : "Waiting for speech..."}
+                </p>
               </div>
             )}
             {displayTranslation && (

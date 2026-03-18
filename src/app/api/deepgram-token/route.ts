@@ -7,6 +7,12 @@ const RATE_WINDOW = 60_000; // 1 minute
 
 function isRateLimited(ip: string): boolean {
   const now = Date.now();
+  // Clean up expired entries to prevent unbounded map growth
+  if (rateLimitMap.size > 500) {
+    for (const [key, val] of rateLimitMap) {
+      if (now > val.resetAt) rateLimitMap.delete(key);
+    }
+  }
   const entry = rateLimitMap.get(ip);
   if (!entry || now > entry.resetAt) {
     rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW });
@@ -44,12 +50,19 @@ export async function GET(req: Request) {
       const data = await res.json();
       return NextResponse.json({ key: data.key });
     }
-  } catch {
-    // Fall through to return main key if scoped key creation fails
-  }
 
-  // Fallback: return the key directly (less secure but functional)
-  return NextResponse.json({ key: apiKey });
+    console.error("Deepgram scoped key API returned status:", res.status);
+    return NextResponse.json(
+      { error: "Speech recognition temporarily unavailable. Please try browser engine." },
+      { status: 503 }
+    );
+  } catch (err) {
+    console.error("Failed to create scoped Deepgram key:", err);
+    return NextResponse.json(
+      { error: "Speech recognition temporarily unavailable. Please try browser engine." },
+      { status: 503 }
+    );
+  }
 }
 
 async function getProjectId(apiKey: string): Promise<string> {

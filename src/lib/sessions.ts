@@ -19,15 +19,20 @@ export function loadSessions(): SavedSession[] {
   } catch { return []; }
 }
 
-export function saveSessions(sessions: SavedSession[]) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions)); } catch { /* quota exceeded */ }
+export function saveSessions(sessions: SavedSession[]): boolean {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export function saveSession(session: SavedSession) {
+export function saveSession(session: SavedSession): boolean {
   const sessions = loadSessions();
   sessions.unshift(session);
   if (sessions.length > 50) sessions.length = 50;
-  saveSessions(sessions);
+  return saveSessions(sessions);
 }
 
 export function deleteSession(id: string) {

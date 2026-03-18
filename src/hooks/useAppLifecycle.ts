@@ -29,12 +29,16 @@ export function useAppLifecycle({ onPause, onResume }: LifecycleCallbacks) {
     window.addEventListener("beforeunload", handleBeforeUnload);
 
     // Capacitor-specific lifecycle events
-    document.addEventListener("pause", () => callbacksRef.current.onPause?.());
-    document.addEventListener("resume", () => callbacksRef.current.onResume?.());
+    const handleCapPause = () => callbacksRef.current.onPause?.();
+    const handleCapResume = () => callbacksRef.current.onResume?.();
+    document.addEventListener("pause", handleCapPause);
+    document.addEventListener("resume", handleCapResume);
 
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("pause", handleCapPause);
+      document.removeEventListener("resume", handleCapResume);
     };
   }, []);
 }

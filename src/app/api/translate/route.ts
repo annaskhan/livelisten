@@ -1,6 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error("ANTHROPIC_API_KEY environment variable is not set");
+}
+
 const anthropic = new Anthropic();
 
 // Simple in-memory rate limiter
@@ -16,6 +20,12 @@ const VALID_LANGUAGES = new Set([
 
 function isRateLimited(ip: string): boolean {
   const now = Date.now();
+  // Clean up expired entries to prevent unbounded map growth
+  if (rateLimitMap.size > 1000) {
+    for (const [key, val] of rateLimitMap) {
+      if (now > val.resetAt) rateLimitMap.delete(key);
+    }
+  }
   const entry = rateLimitMap.get(ip);
   if (!entry || now > entry.resetAt) {
     rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW });
@@ -30,6 +40,10 @@ export async function POST(req: NextRequest) {
   const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
   if (isRateLimited(ip)) {
     return NextResponse.json({ error: "Too many requests. Please try again later." }, { status: 429 });
+  }
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return NextResponse.json({ error: "Translation service not configured." }, { status: 503 });
   }
 
   try {

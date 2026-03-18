@@ -2,6 +2,16 @@
 
 import { useState, useEffect, useRef } from "react";
 
+// Reuse a single AudioContext to prevent memory leaks from creating multiple instances
+let sharedAudioCtx: AudioContext | null = null;
+
+function getAudioContext(): AudioContext {
+  if (!sharedAudioCtx || sharedAudioCtx.state === "closed") {
+    sharedAudioCtx = new AudioContext();
+  }
+  return sharedAudioCtx;
+}
+
 export function useAudioVisualizer(stream: MediaStream | null) {
   const [levels, setLevels] = useState<number[]>(new Array(24).fill(0));
   const animRef = useRef<number>(0);
@@ -12,7 +22,8 @@ export function useAudioVisualizer(stream: MediaStream | null) {
       if (animRef.current) cancelAnimationFrame(animRef.current);
       return;
     }
-    const ctx = new AudioContext();
+    const ctx = getAudioContext();
+    if (ctx.state === "suspended") ctx.resume();
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 64;
@@ -32,7 +43,12 @@ export function useAudioVisualizer(stream: MediaStream | null) {
       animRef.current = requestAnimationFrame(tick);
     }
     tick();
-    return () => { cancelled = true; if (animRef.current) cancelAnimationFrame(animRef.current); ctx.close(); };
+    return () => {
+      cancelled = true;
+      if (animRef.current) cancelAnimationFrame(animRef.current);
+      source.disconnect();
+      // Don't close the shared context — just disconnect the source
+    };
   }, [stream]);
 
   return levels;
