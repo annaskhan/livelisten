@@ -73,51 +73,39 @@ NEXT_PUBLIC_API_BASE_URL= # Optional, defaults to "" (same origin)
 
 ---
 
-## KNOWN ISSUES & BUGS (App Store Blockers)
+## FIXED ISSUES (Completed)
 
-### Critical — Must Fix Before Store Submission
+All critical and important bugs have been fixed as of commit 9e88583:
 
-1. **Deepgram API key exposure** (`api/deepgram-token/route.ts:51-52`)
-   - Falls back to returning the MAIN API key if scoped key creation fails
-   - Must return an error instead, never expose the primary key
+- [x] Deepgram API key exposure — now returns error, never exposes main key
+- [x] CSP `unsafe-eval` removed
+- [x] Capacitor lifecycle event listener leak — proper cleanup
+- [x] Session save race condition — uses refs instead of nested setState
+- [x] Silent recognition failure — retries 3x, then notifies user
+- [x] ANTHROPIC_API_KEY validation — returns clear 503 error
+- [x] Loading indicator during translation ("Translating...")
+- [x] localStorage failure notification to user
+- [x] Translation retry UI feedback ("Retrying 2/4...")
+- [x] AudioContext memory leak — shared singleton
+- [x] Rate limit map unbounded growth — auto-cleanup at 500/1000 entries
+- [x] Fallback engine indication — "Browser" badge in header
+- [x] Accumulated text context trimming — capped at 3000 chars
+- [x] Deepgram improvements: 3s utterance end, keepalive, connection timeout, adaptive debounce for Arabic/Urdu
 
-2. **CSP includes `unsafe-eval`** (`next.config.ts:16`)
-   - `script-src 'self' 'unsafe-inline' 'unsafe-eval'` — app stores flag this
-   - Need to remove `unsafe-eval` (may require Next.js config changes)
+---
 
-3. **Capacitor lifecycle event listeners leak** (`useAppLifecycle.ts:32-33`)
-   - `pause`/`resume` event listeners added but never removed in cleanup
-   - Memory leak in native app environment
+## REMAINING WORK (App Store Submission Gaps)
 
-4. **Race condition saving sessions** (`page.tsx:341-361`)
-   - Nested setState with 2000ms setTimeout — session may save wrong/incomplete data
-   - Should use refs or a more reliable save mechanism
-
-5. **Silent recognition failure** (`page.tsx:314`)
-   - If `recognition.start()` throws in `onend`, UI shows "listening" but nothing transcribes
-   - No recovery or user notification
-
-6. **No ANTHROPIC_API_KEY validation** (`api/translate/route.ts`)
-   - If env var missing, Anthropic SDK throws cryptic error
-   - Should validate at startup and return clear 500 error
-
-### Important — Should Fix
-
-7. **No loading indicator during translation** — Empty panel while streaming, no visual feedback
-8. **Silent localStorage failures** — Sessions can fail to save without user knowing
-9. **Silent translation retries** — Retries 3x with no UI indication
-10. **AudioContext memory leak** (`useAudioVisualizer.ts`) — New context per mount
-11. **Rate limit maps grow unbounded** (both API routes) — Never cleaned up
-12. **No fallback engine indication** — User doesn't know when Deepgram falls back to browser
-13. **Accumulated text context grows unbounded** (`page.tsx:168`) — No trimming on client side
-
-### App Store Submission Gaps
+### Must Do
 - Missing 1024x1024 app icon (App Store requirement)
 - Missing PWA screenshots in manifest.json
 - Privacy policy needs GDPR data retention specifics
 - Terms of service needs jurisdiction/dispute resolution
-- No crash reporting integration
-- No E2E tests
+
+### Should Do
+- No crash reporting integration (Sentry or similar)
+- No E2E tests (Playwright)
+- `createScriptProcessor` is deprecated — should migrate to AudioWorklet
 
 ### Nice-to-Have Improvements
 - Language auto-detection
@@ -145,10 +133,12 @@ NEXT_PUBLIC_API_BASE_URL= # Optional, defaults to "" (same origin)
 13. Context-agnostic translation (not just sermons)
 14. Store-readiness (modular architecture, testing, accessibility, GDPR, icons)
 15. Translation quality fix (strict prompt, religious context, prior context)
+16. **Critical bug fixes + Deepgram hardening** (security, stability, UX, Deepgram keepalive/timeout/debounce)
 
 ## WORKING NOTES
 - Vercel deploys automatically on push to branch
 - PWA is functional but service worker is basic (static caching only)
 - Capacitor config exists but native builds not yet tested end-to-end
-- Tests exist but coverage is minimal (3 test files)
-- The app is currently focused on perfecting everything before app store submission
+- Tests exist but coverage is minimal (3 test files, 32 tests passing)
+- All critical/important bugs are now fixed
+- Next priority: app store submission gaps (icons, legal pages, crash reporting)
