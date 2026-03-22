@@ -52,6 +52,8 @@ export default function LiveListen() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
+  const wsReconnectAttemptRef = useRef(0);
+  const startBrowserRecognitionRef = useRef<(() => void) | null>(null);
 
   const audioLevels = useAudioVisualizer(micStream);
 
@@ -149,13 +151,16 @@ export default function LiveListen() {
         let errorMsg = "Translation service error";
         try { const d = await res.json(); if (d.error) errorMsg = d.error; } catch { /* non-JSON response */ }
         if (res.status === 429) { errorMsg = "Rate limited — please wait a moment"; }
-        setError(errorMsg);
         if (res.status >= 500 && retryCount < 3) {
           const delay = Math.pow(2, retryCount) * 1000;
+          setError(`Translation error — retrying (${retryCount + 1}/3)...`);
           setTimeout(() => translateText(text, isInterim, retryCount + 1), delay);
+        } else {
+          setError(errorMsg);
         }
         return;
       }
+      if (retryCount > 0) setError(null); // Clear retry error on success
       const reader = res.body?.getReader(); if (!reader) return;
       const decoder = new TextDecoder();
       let result = "";
@@ -176,9 +181,10 @@ export default function LiveListen() {
       if (!isInterim) {
         if (retryCount < 3) {
           const delay = Math.pow(2, retryCount) * 1000;
+          setError(`Connection error — retrying (${retryCount + 1}/3)...`);
           setTimeout(() => translateText(text, isInterim, retryCount + 1), delay);
         } else {
-          setError("Translation failed — please check your connection");
+          setError("Translation failed — please check your connection and try again");
         }
       }
     } finally { if (isInterim) abortRef.current = null; }
@@ -220,6 +226,8 @@ export default function LiveListen() {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        wsReconnectAttemptRef.current = 0;
+        setError(null);
         const audioCtx = new AudioContext({ sampleRate: 16000 });
         const source = audioCtx.createMediaStreamSource(stream);
         const processor = audioCtx.createScriptProcessor(4096, 1, 1);
@@ -266,8 +274,51 @@ export default function LiveListen() {
         }
       };
 
-      ws.onerror = () => { setError("Deepgram connection error — using browser recognition"); setUseDeepgram(false); };
-      ws.onclose = () => { if (pendingTextRef.current.trim() && isListeningRef.current) { const t = pendingTextRef.current; pendingTextRef.current = ""; translateText(t, false); } };
+      ws.onerror = () => {
+        if (!isListeningRef.current) return;
+        const attempt = wsReconnectAttemptRef.current;
+        if (attempt < 3) {
+          wsReconnectAttemptRef.current = attempt + 1;
+          const delay = Math.pow(2, attempt) * 1000;
+          setError(`Connection lost — retrying in ${delay / 1000}s...`);
+          setTimeout(() => {
+            if (isListeningRef.current) {
+              // Clean up old connection resources
+              if (mediaRecorderRef.current) { try { mediaRecorderRef.current.stop(); } catch { /* */ } mediaRecorderRef.current = null; }
+              startDeepgram();
+            }
+          }, delay);
+        } else {
+          wsReconnectAttemptRef.current = 0;
+          setError("Deepgram connection error — using browser recognition");
+          setUseDeepgram(false);
+          if (isListeningRef.current && startBrowserRecognitionRef.current) startBrowserRecognitionRef.current();
+        }
+      };
+      ws.onclose = (event) => {
+        if (pendingTextRef.current.trim() && isListeningRef.current) { const t = pendingTextRef.current; pendingTextRef.current = ""; translateText(t, false); }
+        // Reconnect on abnormal closure while still listening
+        if (isListeningRef.current && event.code !== 1000) {
+          const attempt = wsReconnectAttemptRef.current;
+          if (attempt < 3) {
+            wsReconnectAttemptRef.current = attempt + 1;
+            const delay = Math.pow(2, attempt) * 1000;
+            setError(`Connection lost — reconnecting in ${delay / 1000}s...`);
+            setTimeout(() => {
+              if (isListeningRef.current) {
+                if (mediaRecorderRef.current) { try { mediaRecorderRef.current.stop(); } catch { /* */ } mediaRecorderRef.current = null; }
+                startDeepgram();
+              }
+            }, delay);
+          } else {
+            wsReconnectAttemptRef.current = 0;
+            setError("Deepgram connection lost — using browser recognition");
+            setUseDeepgram(false);
+            if (isListeningRef.current && startBrowserRecognitionRef.current) startBrowserRecognitionRef.current();
+          }
+        }
+      };
+      wsReconnectAttemptRef.current = 0;
       setIsListening(true); return true;
     } catch (e) { console.error(e); setError("Could not start Deepgram"); setUseDeepgram(false); return false; }
   }, [sourceLang.deepgramCode, translateText]);
@@ -316,6 +367,9 @@ export default function LiveListen() {
     try { recognition.start(); setIsListening(true); } catch { setError("Could not start microphone."); }
   }, [sourceLang.speechCode, translateText]);
 
+  // Keep ref in sync so startDeepgram reconnection can call it
+  useEffect(() => { startBrowserRecognitionRef.current = startBrowserRecognition; }, [startBrowserRecognition]);
+
   const startListening = useCallback(async () => {
     if (!navigator.onLine) {
       setError("You are offline. Translation requires an internet connection.");
@@ -328,6 +382,7 @@ export default function LiveListen() {
 
   const stopListening = useCallback(() => {
     setIsListening(false);
+    wsReconnectAttemptRef.current = 0;
     if (debounceTimerRef.current) { clearTimeout(debounceTimerRef.current); debounceTimerRef.current = null; }
     if (interimTimerRef.current) { clearTimeout(interimTimerRef.current); interimTimerRef.current = null; }
     if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
