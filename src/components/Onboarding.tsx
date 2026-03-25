@@ -38,8 +38,8 @@ function GrowthAnimation() {
   }, []);
 
   return (
-    <div style={{ width: 260, height: 280, position: "relative", margin: "0 auto 16px" }}>
-      <svg width="260" height="280" viewBox="0 0 260 280">
+    <div style={{ width: 220, height: 240, position: "relative", margin: "0 auto 16px" }}>
+      <svg width="220" height="240" viewBox="0 0 260 280">
         {/* Ground/soil shadow */}
         <ellipse cx="130" cy="248" rx="70" ry="12" fill="var(--secondary)" opacity="0.15">
           <animate attributeName="rx" values="30;70" dur="0.8s" fill="freeze" />
@@ -102,23 +102,25 @@ function GrowthAnimation() {
                 <animate attributeName="x2" values="224;144" dur="0.5s" fill="freeze" />
               </line>
             </g>
-            {/* Water droplets */}
-            <circle cx="140" cy="112" r="3.5" fill="var(--primary-lighter)" opacity="0">
-              <animate attributeName="cy" values="112;174" dur="0.7s" repeatCount="3" />
-              <animate attributeName="opacity" values="0;0.8;0" dur="0.7s" repeatCount="3" />
-            </circle>
-            <circle cx="128" cy="118" r="3" fill="var(--primary-lighter)" opacity="0">
-              <animate attributeName="cy" values="118;176" dur="0.7s" repeatCount="3" begin="0.2s" />
-              <animate attributeName="opacity" values="0;0.7;0" dur="0.7s" repeatCount="3" begin="0.2s" />
-            </circle>
-            <circle cx="148" cy="108" r="2.5" fill="var(--primary-lighter)" opacity="0">
-              <animate attributeName="cy" values="108;170" dur="0.7s" repeatCount="3" begin="0.35s" />
-              <animate attributeName="opacity" values="0;0.6;0" dur="0.7s" repeatCount="3" begin="0.35s" />
-            </circle>
-            <circle cx="134" cy="120" r="2" fill="var(--primary-lighter)" opacity="0">
-              <animate attributeName="cy" values="120;176" dur="0.6s" repeatCount="3" begin="0.1s" />
-              <animate attributeName="opacity" values="0;0.5;0" dur="0.6s" repeatCount="3" begin="0.1s" />
-            </circle>
+            {/* Smooth flowing water stream */}
+            <path d="M144 108 Q140 140 136 174" fill="none" stroke="var(--primary-lighter)" strokeWidth="2.5" strokeLinecap="round" opacity="0">
+              <animate attributeName="opacity" values="0;0.6;0.6;0" dur="1.8s" fill="freeze" />
+              <animate attributeName="stroke-dasharray" values="0 80;40 40;80 0" dur="1.8s" fill="freeze" />
+            </path>
+            <path d="M140 110 Q136 142 132 176" fill="none" stroke="var(--primary-lighter)" strokeWidth="2" strokeLinecap="round" opacity="0">
+              <animate attributeName="opacity" values="0;0.5;0.5;0" dur="1.8s" fill="freeze" begin="0.15s" />
+              <animate attributeName="stroke-dasharray" values="0 80;35 45;80 0" dur="1.8s" fill="freeze" begin="0.15s" />
+            </path>
+            <path d="M148 106 Q144 138 138 170" fill="none" stroke="var(--primary-lighter)" strokeWidth="1.5" strokeLinecap="round" opacity="0">
+              <animate attributeName="opacity" values="0;0.4;0.4;0" dur="1.8s" fill="freeze" begin="0.3s" />
+              <animate attributeName="stroke-dasharray" values="0 80;30 50;80 0" dur="1.8s" fill="freeze" begin="0.3s" />
+            </path>
+            {/* Small splash at soil */}
+            <ellipse cx="134" cy="178" rx="0" ry="0" fill="var(--primary-lighter)" opacity="0">
+              <animate attributeName="rx" values="0;8;12;0" dur="1s" fill="freeze" begin="0.6s" />
+              <animate attributeName="ry" values="0;2;3;0" dur="1s" fill="freeze" begin="0.6s" />
+              <animate attributeName="opacity" values="0;0.4;0.2;0" dur="1s" fill="freeze" begin="0.6s" />
+            </ellipse>
           </g>
         )}
 
@@ -285,7 +287,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
         {step === "welcome" && (
           <>
             <GrowthAnimation />
-            <h1 className="font-display gradient-text" style={{ fontSize: 56, fontWeight: 800, marginBottom: 8, letterSpacing: "-0.02em", textTransform: "uppercase" }}>
+            <h1 className="gradient-text" style={{ fontSize: 38, fontWeight: 700, marginBottom: 8, letterSpacing: "0.04em", textTransform: "uppercase", fontFamily: "var(--font-sans)" }}>
               {APP_NAME}
             </h1>
             <p style={{ fontSize: 18, color: "var(--text-dim)", marginBottom: 40, lineHeight: 1.5 }}>
